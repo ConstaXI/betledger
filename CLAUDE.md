@@ -7,12 +7,21 @@ spec é o critério de avaliação e tem itens eliminatórios.
 ## Comandos
 
 ```sh
-go test ./...             # testes
-go test -race ./...       # obrigatório antes de considerar algo pronto
-go vet ./...
-gofmt -l .                # deve não imprimir nada
-go run ./cmd/betledger    # sobe a aplicação
+make check              # vet, testes com -race, gofmt e sqlc diff — rodar antes de dar algo por pronto
+make test-integration   # integração com testcontainers; exige Docker
+make generate           # regenera o sqlc após mudar migration ou query
+make dev                # sobe Postgres, migra e inicia a aplicação
 ```
+
+O `make` do usuário tem alias para `make -j24`; o Makefile declara
+`.NOTPARALLEL` para alvos encadeados não rodarem ao mesmo tempo. Não remova.
+
+Nunca edite `internal/infrastructure/postgres/sqlcgen` à mão: é gerado.
+
+O contrato HTTP vive em `api/openapi.yaml`, escrito à mão. Ao criar ou mudar um
+endpoint, um status ou um campo de resposta, atualize a spec **e** acrescente o
+cenário em `TestResponsesMatchTheOpenAPIContract`, que valida as respostas reais
+contra ela.
 
 ## Convenções de código
 
@@ -20,9 +29,11 @@ go run ./cmd/betledger    # sobe a aplicação
 erro**. Só `README.md`, `ARCHITECTURE.md` e mensagens de commit ficam em
 português, porque o leitor delas é o avaliador do desafio.
 
-**Comentários**: apenas godoc em declarações exportadas, conciso. Nada de
-comentário inline, comentário de campo de struct ou prosa explicativa dentro de
-função.
+**Comentários**: apenas godoc, conciso. Vale para declarações exportadas e para
+os **campos das entidades de domínio** — inclusive os não exportados, que o
+`go doc` não mostra mas quem lê o código-fonte sim. O godoc de campo deve dizer
+algo que o nome não diz (invariante, unidade, quando fica vazio), nunca repetir o
+nome. Nada de comentário inline nem prosa explicativa dentro de função.
 
 **Sem getters por reflexo**: em DTOs, linhas de banco e payloads de evento, use
 campos exportados. A exceção é o núcleo do domínio (`Money`, `Wallet`,
