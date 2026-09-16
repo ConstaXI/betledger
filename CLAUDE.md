@@ -49,6 +49,20 @@ referência pendente é por número máximo de tentativas, não por TTL.
 **Domínio isolado**: `internal/domain` não importa Fx, HTTP, SQS nem biblioteca
 de persistência. Só stdlib, `google/uuid` e `testify` nos testes.
 
+**Um subpacote por conceito**, com dependências apontando sempre na mesma
+direção — um pacote nunca importa quem está acima dele:
+
+```
+domain (erros, IDs) <- money <- ledger, wager <- wallet <- event
+```
+
+Nomes seguem o estilo Go, sem repetir o pacote na chamada: `money.Parse`,
+`wallet.Open`, `wager.KindBet`, `ledger.Debit`. O pacote das operações se chama
+`wager`, não `transaction`, porque variável com o nome do pacote o esconde e
+`transaction` é nome de variável em todo lugar. Pelo mesmo motivo, **não nomeie
+variáveis como os pacotes do domínio** (`wallet`, `money`, `event`): use `w`,
+`amount`, `e`, ou um nome que diga o papel (`opened`, `bet`).
+
 **Dinheiro nunca em ponto flutuante**, em nenhuma etapa — parsing, cálculo,
 serialização ou persistência. Isso é eliminatório na spec.
 
@@ -67,9 +81,10 @@ assert.Equal(t, test.wantResult, got)
 Isso funciona porque, em caso de erro, a operação devolve o valor zero — que
 coincide com o `wantResult` não preenchido — e `errors.Is(nil, nil)` é `true`.
 
-**Sem helpers locais** além dos construtores de fixture compartilhados
-(`mustMoney`, `mustWallet`, `mustTransaction`, `validExternalParams`). Fixtures
-vão inline no literal da tabela, via construtores `Must*` do domínio.
+**Sem helpers locais** além dos fixtures compartilhados do pacote
+`internal/domain/domaintest` (`MustParseMoney`, `MustOpenWallet`,
+`ValidExternalParams`, `MustExternalTransaction`...), que existe só para testes.
+Fixtures vão inline no literal da tabela, via construtores `Must*` do domínio.
 
 **testify**: `assert` para verificações, `require` só quando continuar causaria
 panic. Duas pegadinhas: a ordem é `(t, expected, actual)`, e `assert.Equal` é

@@ -175,7 +175,12 @@ go test -tags=integration -run 'TestSchemaEnforcesFinancialInvariants' ./interna
 api/                                 contrato HTTP em OpenAPI e página do Swagger UI
 cmd/betledger/                       entrypoint, composição da aplicação via Fx
 cmd/migrate/                         aplicação e reversão das migrations
-internal/domain/                     modelo de negócio
+internal/domain/                     erros e identificadores compartilhados
+internal/domain/money/               valor monetário exato, sem ponto flutuante
+internal/domain/ledger/              lançamentos do ledger append-only
+internal/domain/wager/               operações dos provedores e máquina de estados
+internal/domain/wallet/              carteira, raiz do agregado financeiro
+internal/domain/event/               eventos de integração
 internal/usecase/                    casos de uso e as portas que eles consomem
 internal/infrastructure/config/      carga e validação da configuração de ambiente
 internal/infrastructure/httpserver/  handlers, middleware e ciclo de vida do servidor

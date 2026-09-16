@@ -9,6 +9,11 @@ em [SPECS.md](SPECS.md); cada seção indica se a decisão já está implementad
 nem de persistência. Toda integração com o mundo externo fica nas bordas, e a
 composição da aplicação acontece apenas no entrypoint.
 
+O domínio é dividido em um pacote por conceito — `money`, `ledger`, `wager`,
+`wallet` e `event` —, e as dependências entre eles seguem uma direção única:
+`money` não conhece nada acima dele, e `event` pode ler todos. Como em Go cada
+pasta é um pacote, essa direção é imposta pelo compilador, que recusa ciclos.
+
 ## Dinheiro
 
 **Implementado.** `Money` usa `int64` em centavos com escala fixa de duas casas,
