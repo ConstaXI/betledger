@@ -17,6 +17,7 @@ const (
 
 // Currency is a validated ISO 4217 code.
 type Currency struct {
+	// code is the three-letter uppercase ISO 4217 code, empty when uninitialized.
 	code string
 }
 
@@ -59,8 +60,12 @@ func (c Currency) IsZero() bool { return c.code == "" }
 // NewMoney, so its Amount is not parseable back; the domain invariants keep
 // balances away from that bound.
 type Money struct {
+	// minorUnits is the amount in the smallest currency unit, at a fixed scale of
+	// two decimal places.
 	minorUnits int64
-	currency   Currency
+	// currency is empty only for an uninitialized Money, which every operation
+	// rejects.
+	currency Currency
 }
 
 // ParseMoney builds Money from the external contract, accepting only
@@ -320,25 +325,12 @@ type moneyJSON struct {
 }
 
 // MarshalJSON serializes to the external contract
-// {"amount":"25.00","currency":"BRL"}.
+// {"amount":"25.00","currency":"BRL"}. It exists because the fields are
+// unexported; decoding is deliberately absent, so external input always goes
+// through ParseMoney.
 func (m Money) MarshalJSON() ([]byte, error) {
 	if err := m.Validate(); err != nil {
 		return nil, err
 	}
 	return json.Marshal(moneyJSON{Amount: m.Amount(), Currency: m.currency.String()})
-}
-
-// UnmarshalJSON accepts signed values so that service responses round-trip.
-// External financial input must go through ParseMoney, which rejects negatives.
-func (m *Money) UnmarshalJSON(data []byte) error {
-	var raw moneyJSON
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return ValidationError(FailureCodeInvalidInput, "malformed monetary amount: %v", err)
-	}
-	parsed, err := ParseSignedMoney(raw.Amount, raw.Currency)
-	if err != nil {
-		return err
-	}
-	*m = parsed
-	return nil
 }

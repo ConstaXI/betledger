@@ -110,24 +110,44 @@ func (s TransactionState) CanTransitionTo(target TransactionState) bool {
 // told apart by Kind.IsExternal. A pending reference expires by a maximum
 // number of attempts rather than a TTL, which keeps the domain free of a clock.
 type WagerTransaction struct {
-	id       ID
-	kind     TransactionKind
-	state    TransactionState
+	// id is the internal identifier of the operation.
+	id ID
+	// kind determines the balance movement and the reference policy.
+	kind TransactionKind
+	// state only advances through the transitions allowed by CanTransitionTo.
+	state TransactionState
+	// walletID is the wallet the operation moves.
 	walletID ID
+	// playerID owns the wallet; it must match the wallet owner.
 	playerID ID
-	money    Money
+	// money is zero for LOSS and positive for every other kind.
+	money Money
 
-	providerID            string
+	// providerID identifies the game provider; empty for the internal opening.
+	providerID string
+	// externalTransactionID is the provider identifier, unique per provider.
 	externalTransactionID string
-	idempotencyKey        string
-	payloadHash           string
-	roundID               string
-	gameID                string
+	// idempotencyKey is kept verbatim as received; the server never replaces it
+	// with a computed key.
+	idempotencyKey string
+	// payloadHash detects a reused idempotency key carrying different content.
+	payloadHash string
+	// roundID groups the operations of a single game round.
+	roundID string
+	// gameID identifies the game where the round happened.
+	gameID string
 
+	// referenceExternalTransactionID is the provider identifier of the referenced
+	// operation, required for reversals and optional for WIN.
 	referenceExternalTransactionID string
-	referenceTransactionID         ID
+	// referenceTransactionID is the internal identifier the reference resolved
+	// to, nil until resolution.
+	referenceTransactionID ID
 
-	failureCode   FailureCode
+	// failureCode explains a REJECTED or FAILED outcome.
+	failureCode FailureCode
+	// resultBalance is the balance observed on conclusion, so that a replay
+	// returns the original result even after later movements.
 	resultBalance *Money
 }
 

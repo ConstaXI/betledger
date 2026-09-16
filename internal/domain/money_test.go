@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/davibanfi/betledger/internal/domain"
 )
@@ -370,24 +371,16 @@ func TestMoneyMarshalJSON(t *testing.T) {
 	}
 }
 
-func TestMoneyUnmarshalJSON(t *testing.T) {
+func TestMoneyJSONDecodingLeavesValueUninitialized(t *testing.T) {
 	t.Parallel()
 
-	brl := domain.MustCurrency("BRL")
-
 	tests := []struct {
-		name       string
-		data       string
-		wantResult domain.Money
-		wantErr    error
+		name string
+		data string
 	}{
-		{name: "should parse when the payload holds a positive amount", data: `{"amount":"25.00","currency":"BRL"}`, wantResult: domain.MustMoney(2500, brl)},
-		{name: "should parse when the payload holds a negative amount", data: `{"amount":"-25.00","currency":"BRL"}`, wantResult: domain.MustMoney(-2500, brl)},
-		{name: "should normalize scale when the payload has one decimal place", data: `{"amount":"25.5","currency":"BRL"}`, wantResult: domain.MustMoney(2550, brl)},
-		{name: "should return INVALID_AMOUNT when the payload exceeds the scale", data: `{"amount":"25.123","currency":"BRL"}`, wantErr: domain.FailureCodeInvalidAmount},
-		{name: "should return INVALID_INPUT when the payload currency is invalid", data: `{"amount":"25.00","currency":"brl"}`, wantErr: domain.FailureCodeInvalidInput},
-		{name: "should return INVALID_AMOUNT when the payload has no amount", data: `{"currency":"BRL"}`, wantErr: domain.FailureCodeInvalidAmount},
-		{name: "should return INVALID_INPUT when the payload is malformed", data: `{"amount":25.00}`, wantErr: domain.FailureCodeInvalidInput},
+		{name: "should leave Money uninitialized when the payload holds a positive amount", data: `{"amount":"25.00","currency":"BRL"}`},
+		{name: "should leave Money uninitialized when the payload holds a negative amount", data: `{"amount":"-25.00","currency":"BRL"}`},
+		{name: "should leave Money uninitialized when the payload has a numeric amount", data: `{"amount":25.00}`},
 	}
 
 	for _, test := range tests {
@@ -395,10 +388,10 @@ func TestMoneyUnmarshalJSON(t *testing.T) {
 			t.Parallel()
 
 			var got domain.Money
-			err := json.Unmarshal([]byte(test.data), &got)
+			require.NoError(t, json.Unmarshal([]byte(test.data), &got))
 
-			assert.ErrorIs(t, err, test.wantErr)
-			assert.Equal(t, test.wantResult, got)
+			assert.Equal(t, domain.Money{}, got)
+			assert.ErrorIs(t, got.Validate(), domain.FailureCodeInvalidInput)
 		})
 	}
 }

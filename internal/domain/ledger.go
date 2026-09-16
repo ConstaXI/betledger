@@ -18,13 +18,21 @@ func (d LedgerDirection) String() string { return string(d) }
 // WalletLedgerEntry is an immutable entry of the append-only ledger. Financial
 // corrections require new entries, never editing an existing one.
 type WalletLedgerEntry struct {
-	id            ID
-	walletID      ID
+	// id is the internal identifier of the entry.
+	id ID
+	// walletID is the wallet whose balance the entry moved.
+	walletID ID
+	// transactionID is the operation that produced the entry; together with
+	// walletID it is unique, so an operation never moves a wallet twice.
 	transactionID ID
-	direction     LedgerDirection
-	money         Money
+	// direction tells whether money was added to or removed from the balance.
+	direction LedgerDirection
+	// money is always positive; the sign comes from direction.
+	money Money
+	// balanceBefore is the wallet balance right before the entry.
 	balanceBefore Money
-	balanceAfter  Money
+	// balanceAfter equals balanceBefore plus or minus money, per direction.
+	balanceAfter Money
 }
 
 // NewWalletLedgerEntry creates an entry, validating the balance arithmetic. It

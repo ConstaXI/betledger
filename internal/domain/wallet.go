@@ -2,13 +2,18 @@ package domain
 
 // Wallet is the root of the financial aggregate. Every balance change goes
 // through the aggregate and yields the matching ledger entry, which must be
-// committed in the same SQL transaction as the balance. Version is incremented
-// on each balance change and backs the conditional update in the database.
+// committed in the same SQL transaction as the balance.
 type Wallet struct {
-	id       ID
+	// id is the internal UUIDv7 identifier of the wallet.
+	id ID
+	// playerID identifies the owner; together with the balance currency it is
+	// unique across wallets.
 	playerID ID
-	balance  Money
-	version  int64
+	// balance never goes below zero, and its currency is the wallet currency.
+	balance Money
+	// version starts at 1 and increments only on a balance change, backing the
+	// conditional update that prevents lost updates.
+	version int64
 }
 
 const initialWalletVersion int64 = 1

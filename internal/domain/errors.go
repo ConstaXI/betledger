@@ -53,9 +53,14 @@ var ErrInsufficientFunds = errors.New("domain: insufficient funds")
 // Error is the domain error. It carries a class, for errors.Is, and a stable
 // FailureCode for the external contract.
 type Error struct {
-	class   error
-	cause   error
-	code    FailureCode
+	// class is the sentinel matched by errors.Is, such as ErrRejected.
+	class error
+	// cause is an optional sentinel exposed through Unwrap, such as
+	// ErrInsufficientFunds.
+	cause error
+	// code is the stable FailureCode exposed in the external contract.
+	code FailureCode
+	// message is the human-readable description, without the code prefix.
 	message string
 }
 
