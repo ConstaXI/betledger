@@ -93,3 +93,81 @@ func (q *Queries) InsertWagerTransaction(ctx context.Context, arg InsertWagerTra
 	)
 	return err
 }
+
+const selectWagerTransactionByExternalID = `-- name: SelectWagerTransactionByExternalID :one
+SELECT id, kind, state, wallet_id, player_id, currency, amount_minor, provider_id, external_transaction_id, idempotency_key, payload_hash, round_id, game_id, reference_external_transaction_id, reference_transaction_id, failure_code, result_balance_minor, created_at, updated_at
+FROM wager_transactions
+WHERE provider_id = $1
+  AND external_transaction_id = $2
+`
+
+type SelectWagerTransactionByExternalIDParams struct {
+	ProviderID            *string
+	ExternalTransactionID *string
+}
+
+func (q *Queries) SelectWagerTransactionByExternalID(ctx context.Context, arg SelectWagerTransactionByExternalIDParams) (WagerTransaction, error) {
+	row := q.db.QueryRow(ctx, selectWagerTransactionByExternalID, arg.ProviderID, arg.ExternalTransactionID)
+	var i WagerTransaction
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.State,
+		&i.WalletID,
+		&i.PlayerID,
+		&i.Currency,
+		&i.AmountMinor,
+		&i.ProviderID,
+		&i.ExternalTransactionID,
+		&i.IdempotencyKey,
+		&i.PayloadHash,
+		&i.RoundID,
+		&i.GameID,
+		&i.ReferenceExternalTransactionID,
+		&i.ReferenceTransactionID,
+		&i.FailureCode,
+		&i.ResultBalanceMinor,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const selectWagerTransactionByIdempotencyKey = `-- name: SelectWagerTransactionByIdempotencyKey :one
+SELECT id, kind, state, wallet_id, player_id, currency, amount_minor, provider_id, external_transaction_id, idempotency_key, payload_hash, round_id, game_id, reference_external_transaction_id, reference_transaction_id, failure_code, result_balance_minor, created_at, updated_at
+FROM wager_transactions
+WHERE provider_id = $1
+  AND idempotency_key = $2
+`
+
+type SelectWagerTransactionByIdempotencyKeyParams struct {
+	ProviderID     *string
+	IdempotencyKey *string
+}
+
+func (q *Queries) SelectWagerTransactionByIdempotencyKey(ctx context.Context, arg SelectWagerTransactionByIdempotencyKeyParams) (WagerTransaction, error) {
+	row := q.db.QueryRow(ctx, selectWagerTransactionByIdempotencyKey, arg.ProviderID, arg.IdempotencyKey)
+	var i WagerTransaction
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.State,
+		&i.WalletID,
+		&i.PlayerID,
+		&i.Currency,
+		&i.AmountMinor,
+		&i.ProviderID,
+		&i.ExternalTransactionID,
+		&i.IdempotencyKey,
+		&i.PayloadHash,
+		&i.RoundID,
+		&i.GameID,
+		&i.ReferenceExternalTransactionID,
+		&i.ReferenceTransactionID,
+		&i.FailureCode,
+		&i.ResultBalanceMinor,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

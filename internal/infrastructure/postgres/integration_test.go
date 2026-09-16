@@ -22,14 +22,17 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/money"
+	"github.com/davibanfi/betledger/internal/domain/wallet"
 	"github.com/davibanfi/betledger/internal/infrastructure/postgres"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
 var (
-	databaseURL string
-	pool        *pgxpool.Pool
-	openWallet  *usecase.OpenWallet
+	databaseURL  string
+	pool         *pgxpool.Pool
+	openWallet   *usecase.OpenWallet
+	processWager *usecase.ProcessWager
 )
 
 func TestMain(m *testing.M) {
@@ -89,6 +92,14 @@ func runIntegration(m *testing.M) int {
 		postgres.NewOutboxRepository(),
 		time.Now,
 	)
+	processWager = usecase.NewProcessWager(
+		postgres.NewTransactor(pool),
+		postgres.NewWalletRepository(),
+		postgres.NewTransactionRepository(),
+		postgres.NewLedgerRepository(),
+		postgres.NewOutboxRepository(),
+		time.Now,
+	)
 
 	return m.Run()
 }
@@ -109,7 +120,7 @@ func TestMigrationsAreReversible(t *testing.T) {
 
 	applied, err := provider.Up(ctx)
 	require.NoError(t, err)
-	assert.Len(t, applied, 4)
+	assert.Len(t, applied, len(provider.ListSources()))
 
 	for range applied {
 		_, err := provider.Down(ctx)
@@ -120,29 +131,29 @@ func TestMigrationsAreReversible(t *testing.T) {
 
 	reapplied, err := provider.Up(ctx)
 	require.NoError(t, err)
-	assert.Len(t, reapplied, 4)
+	assert.Len(t, reapplied, len(provider.ListSources()))
 }
 
 func TestOpenWalletPersistsOpeningAtomically(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	wallet, err := openWallet.Execute(ctx, usecase.OpenWalletInput{
+	w, err := openWallet.Execute(ctx, usecase.OpenWalletInput{
 		PlayerID:       domain.NewID(),
-		InitialBalance: domain.MustMoney(100000, domain.MustCurrency("BRL")),
+		InitialBalance: money.MustNew(100000, money.MustCurrency("BRL")),
 		CorrelationID:  "req-integration",
 	})
 	require.NoError(t, err)
 
 	var balance, version int64
 	require.NoError(t, pool.QueryRow(ctx,
-		"SELECT balance_minor, version FROM wallets WHERE id = $1", wallet.ID()).Scan(&balance, &version))
+		"SELECT balance_minor, version FROM wallets WHERE id = $1", w.ID()).Scan(&balance, &version))
 	assert.Equal(t, int64(100000), balance)
 	assert.Equal(t, int64(1), version)
 
 	var kind, state string
 	require.NoError(t, pool.QueryRow(ctx,
-		"SELECT kind, state FROM wager_transactions WHERE wallet_id = $1", wallet.ID()).Scan(&kind, &state))
+		"SELECT kind, state FROM wager_transactions WHERE wallet_id = $1", w.ID()).Scan(&kind, &state))
 	assert.Equal(t, "OPENING", kind)
 	assert.Equal(t, "PROCESSED", state)
 
@@ -150,14 +161,14 @@ func TestOpenWalletPersistsOpeningAtomically(t *testing.T) {
 	var before, after int64
 	require.NoError(t, pool.QueryRow(ctx,
 		"SELECT direction, balance_before_minor, balance_after_minor FROM wallet_ledger_entries WHERE wallet_id = $1",
-		wallet.ID()).Scan(&direction, &before, &after))
+		w.ID()).Scan(&direction, &before, &after))
 	assert.Equal(t, "CREDIT", direction)
 	assert.Equal(t, int64(0), before)
 	assert.Equal(t, int64(100000), after)
 
 	rows, err := pool.Query(ctx,
 		"SELECT event_type, payload->>'correlationId' FROM outbox_events WHERE aggregate_id = $1 ORDER BY event_type",
-		wallet.ID())
+		w.ID())
 	require.NoError(t, err)
 	var eventTypes, correlationIDs []string
 	for rows.Next() {
@@ -177,7 +188,7 @@ func TestOpenWalletRejectsDuplicateWithoutSideEffects(t *testing.T) {
 	ctx := context.Background()
 	input := usecase.OpenWalletInput{
 		PlayerID:       domain.NewID(),
-		InitialBalance: domain.MustMoney(5000, domain.MustCurrency("BRL")),
+		InitialBalance: money.MustNew(5000, money.MustCurrency("BRL")),
 		CorrelationID:  "req-duplicate",
 	}
 
@@ -203,18 +214,18 @@ func TestTransactorRollsBackWhenTheUnitOfWorkFails(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	wallet, err := domain.OpenWallet(domain.NewID(), domain.NewID(), domain.MustMoney(0, domain.MustCurrency("BRL")))
+	w, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(0, money.MustCurrency("BRL")))
 	require.NoError(t, err)
 	errAbort := errors.New("abort")
 
 	err = postgres.NewTransactor(pool).WithinTransaction(ctx, func(ctx context.Context) error {
-		require.NoError(t, postgres.NewWalletRepository().Create(ctx, wallet))
+		require.NoError(t, postgres.NewWalletRepository().Create(ctx, w))
 		return errAbort
 	})
 
 	assert.ErrorIs(t, err, errAbort)
 	var count int
-	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM wallets WHERE id = $1", wallet.ID()).Scan(&count))
+	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM wallets WHERE id = $1", w.ID()).Scan(&count))
 	assert.Equal(t, 0, count)
 }
 
@@ -222,14 +233,14 @@ func TestRepositoriesRejectWritesOutsideTransaction(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	wallet, err := domain.OpenWallet(domain.NewID(), domain.NewID(), domain.MustMoney(0, domain.MustCurrency("BRL")))
+	w, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(0, money.MustCurrency("BRL")))
 	require.NoError(t, err)
 
-	err = postgres.NewWalletRepository().Create(ctx, wallet)
+	err = postgres.NewWalletRepository().Create(ctx, w)
 
 	assert.Error(t, err)
 	var count int
-	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM wallets WHERE id = $1", wallet.ID()).Scan(&count))
+	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM wallets WHERE id = $1", w.ID()).Scan(&count))
 	assert.Equal(t, 0, count)
 }
 
@@ -237,18 +248,18 @@ func TestSchemaEnforcesFinancialInvariants(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	wallet, err := openWallet.Execute(ctx, usecase.OpenWalletInput{
+	w, err := openWallet.Execute(ctx, usecase.OpenWalletInput{
 		PlayerID:       domain.NewID(),
-		InitialBalance: domain.MustMoney(100000, domain.MustCurrency("BRL")),
+		InitialBalance: money.MustNew(100000, money.MustCurrency("BRL")),
 		CorrelationID:  "req-constraints",
 	})
 	require.NoError(t, err)
 
 	var openingID, eventID string
 	require.NoError(t, pool.QueryRow(ctx,
-		"SELECT id::text FROM wager_transactions WHERE wallet_id = $1", wallet.ID()).Scan(&openingID))
+		"SELECT id::text FROM wager_transactions WHERE wallet_id = $1", w.ID()).Scan(&openingID))
 	require.NoError(t, pool.QueryRow(ctx,
-		"SELECT id::text FROM outbox_events WHERE aggregate_id = $1 LIMIT 1", wallet.ID()).Scan(&eventID))
+		"SELECT id::text FROM outbox_events WHERE aggregate_id = $1 LIMIT 1", w.ID()).Scan(&eventID))
 
 	const (
 		checkViolation    = "23514"
@@ -265,19 +276,19 @@ func TestSchemaEnforcesFinancialInvariants(t *testing.T) {
 		{
 			name:     "should return check_violation when a wallet balance becomes negative",
 			sql:      "UPDATE wallets SET balance_minor = -1 WHERE id = $1",
-			args:     []any{wallet.ID()},
+			args:     []any{w.ID()},
 			wantCode: checkViolation,
 		},
 		{
 			name:     "should return restrict_violation when a ledger entry is updated",
 			sql:      "UPDATE wallet_ledger_entries SET amount_minor = 1 WHERE wallet_id = $1",
-			args:     []any{wallet.ID()},
+			args:     []any{w.ID()},
 			wantCode: restrictViolation,
 		},
 		{
 			name:     "should return restrict_violation when a ledger entry is deleted",
 			sql:      "DELETE FROM wallet_ledger_entries WHERE wallet_id = $1",
-			args:     []any{wallet.ID()},
+			args:     []any{w.ID()},
 			wantCode: restrictViolation,
 		},
 		{
@@ -290,21 +301,21 @@ func TestSchemaEnforcesFinancialInvariants(t *testing.T) {
 			sql: `INSERT INTO wallet_ledger_entries
 				(id, wallet_id, transaction_id, direction, currency, amount_minor, balance_before_minor, balance_after_minor)
 				VALUES (gen_random_uuid(), $1, $2, 'CREDIT', 'BRL', 100, 0, 999)`,
-			args:     []any{wallet.ID(), openingID},
+			args:     []any{w.ID(), openingID},
 			wantCode: checkViolation,
 		},
 		{
 			name: "should return unique_violation when a wallet receives a second opening",
 			sql: `INSERT INTO wager_transactions (id, kind, state, wallet_id, player_id, currency, amount_minor)
 				VALUES (gen_random_uuid(), 'OPENING', 'PROCESSED', $1, $2, 'BRL', 100)`,
-			args:     []any{wallet.ID(), wallet.PlayerID()},
+			args:     []any{w.ID(), w.PlayerID()},
 			wantCode: uniqueViolation,
 		},
 		{
 			name: "should return check_violation when an opening carries provider metadata",
 			sql: `INSERT INTO wager_transactions (id, kind, state, wallet_id, player_id, currency, amount_minor, provider_id)
 				VALUES (gen_random_uuid(), 'OPENING', 'PROCESSED', $1, $2, 'BRL', 100, 'provider-a')`,
-			args:     []any{wallet.ID(), wallet.PlayerID()},
+			args:     []any{w.ID(), w.PlayerID()},
 			wantCode: checkViolation,
 		},
 		{

@@ -1,0 +1,372 @@
+// Package wager implements the wagering operations sent by game providers and
+// their state machine.
+package wager
+
+import (
+	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/money"
+)
+
+// Transaction records a financial operation and its outcome. External
+// operations carry the provider metadata; the internal opening does not, and is
+// told apart by Kind.IsExternal. A pending reference expires by a maximum number
+// of attempts rather than a TTL, which keeps the domain free of a clock.
+type Transaction struct {
+	// id is the internal identifier of the operation.
+	id domain.ID
+	// kind determines the balance movement and the reference policy.
+	kind Kind
+	// state only advances through the transitions allowed by CanTransitionTo.
+	state State
+	// walletID is the wallet the operation moves.
+	walletID domain.ID
+	// playerID owns the wallet; it must match the wallet owner.
+	playerID domain.ID
+	// amount is zero for LOSS and positive for every other kind.
+	amount money.Money
+
+	// providerID identifies the game provider; empty for the internal opening.
+	providerID string
+	// externalTransactionID is the provider identifier, unique per provider.
+	externalTransactionID string
+	// idempotencyKey is kept verbatim as received; the server never replaces it
+	// with a computed key.
+	idempotencyKey string
+	// payloadHash detects a reused idempotency key carrying different content.
+	payloadHash string
+	// roundID groups the operations of a single game round.
+	roundID string
+	// gameID identifies the game where the round happened.
+	gameID string
+
+	// referenceExternalTransactionID is the provider identifier of the referenced
+	// operation, required for reversals and optional for WIN.
+	referenceExternalTransactionID string
+	// referenceTransactionID is the internal identifier the reference resolved
+	// to, nil until resolution.
+	referenceTransactionID domain.ID
+
+	// failureCode explains a REJECTED or FAILED outcome.
+	failureCode domain.FailureCode
+	// resultBalance is the balance observed on conclusion, so that a replay
+	// returns the original result even after later movements.
+	resultBalance *money.Money
+}
+
+// NewExternalParams gathers an operation received over HTTP or SQS.
+type NewExternalParams struct {
+	ID                             domain.ID
+	Kind                           Kind
+	ProviderID                     string
+	ExternalTransactionID          string
+	IdempotencyKey                 string
+	PayloadHash                    string
+	WalletID                       domain.ID
+	PlayerID                       domain.ID
+	RoundID                        string
+	GameID                         string
+	Money                          money.Money
+	ReferenceExternalTransactionID string
+}
+
+// NewExternal creates an external operation in the PENDING state.
+func NewExternal(params NewExternalParams) (*Transaction, error) {
+	if !params.Kind.IsValid() {
+		return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "transaction kind %q is invalid", params.Kind)
+	}
+	if !params.Kind.IsExternal() {
+		return nil, domain.ValidationError(domain.FailureCodeKindNotAllowed,
+			"kind %s is reserved for the internal wallet opening", params.Kind)
+	}
+	if err := domain.RequireID(params.ID, "transactionId"); err != nil {
+		return nil, err
+	}
+	if err := domain.RequireID(params.WalletID, "walletId"); err != nil {
+		return nil, err
+	}
+	if err := domain.RequireID(params.PlayerID, "playerId"); err != nil {
+		return nil, err
+	}
+	for field, value := range map[string]string{
+		"providerId":            params.ProviderID,
+		"externalTransactionId": params.ExternalTransactionID,
+		"idempotencyKey":        params.IdempotencyKey,
+		"payloadHash":           params.PayloadHash,
+		"roundId":               params.RoundID,
+		"gameId":                params.GameID,
+	} {
+		if value == "" {
+			return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "%s is required", field)
+		}
+	}
+	if err := validateKindAmount(params.Kind, params.Money); err != nil {
+		return nil, err
+	}
+	if err := validateKindReference(params.Kind, params.ReferenceExternalTransactionID); err != nil {
+		return nil, err
+	}
+
+	return &Transaction{
+		id:                             params.ID,
+		kind:                           params.Kind,
+		state:                          StatePending,
+		walletID:                       params.WalletID,
+		playerID:                       params.PlayerID,
+		amount:                         params.Money,
+		providerID:                     params.ProviderID,
+		externalTransactionID:          params.ExternalTransactionID,
+		idempotencyKey:                 params.IdempotencyKey,
+		payloadHash:                    params.PayloadHash,
+		roundID:                        params.RoundID,
+		gameID:                         params.GameID,
+		referenceExternalTransactionID: params.ReferenceExternalTransactionID,
+	}, nil
+}
+
+// NewOpening creates the internal wallet opening operation, already concluded
+// and without the external metadata that does not apply to it.
+func NewOpening(id, walletID, playerID domain.ID, initialBalance money.Money) (*Transaction, error) {
+	if err := domain.RequireID(id, "transactionId"); err != nil {
+		return nil, err
+	}
+	if err := domain.RequireID(walletID, "walletId"); err != nil {
+		return nil, err
+	}
+	if err := domain.RequireID(playerID, "playerId"); err != nil {
+		return nil, err
+	}
+	if err := validateKindAmount(KindOpening, initialBalance); err != nil {
+		return nil, err
+	}
+
+	balance := initialBalance
+	return &Transaction{
+		id:            id,
+		kind:          KindOpening,
+		state:         StateProcessed,
+		walletID:      walletID,
+		playerID:      playerID,
+		amount:        initialBalance,
+		resultBalance: &balance,
+	}, nil
+}
+
+// RehydrateParams gathers the persisted state of an operation.
+type RehydrateParams struct {
+	ID                             domain.ID
+	Kind                           Kind
+	State                          State
+	WalletID                       domain.ID
+	PlayerID                       domain.ID
+	Money                          money.Money
+	ProviderID                     string
+	ExternalTransactionID          string
+	IdempotencyKey                 string
+	PayloadHash                    string
+	RoundID                        string
+	GameID                         string
+	ReferenceExternalTransactionID string
+	ReferenceTransactionID         domain.ID
+	FailureCode                    domain.FailureCode
+	ResultBalance                  *money.Money
+}
+
+// Rehydrate rebuilds a persisted operation without reapplying movements,
+// transitions or event emission.
+func Rehydrate(params RehydrateParams) (*Transaction, error) {
+	if !params.Kind.IsValid() {
+		return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "transaction kind %q is invalid", params.Kind)
+	}
+	if !params.State.IsValid() {
+		return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "state %q is invalid", params.State)
+	}
+	if err := domain.RequireID(params.ID, "transactionId"); err != nil {
+		return nil, err
+	}
+	if err := domain.RequireID(params.WalletID, "walletId"); err != nil {
+		return nil, err
+	}
+	if err := domain.RequireID(params.PlayerID, "playerId"); err != nil {
+		return nil, err
+	}
+	if err := params.Money.Validate(); err != nil {
+		return nil, err
+	}
+
+	return &Transaction{
+		id:                             params.ID,
+		kind:                           params.Kind,
+		state:                          params.State,
+		walletID:                       params.WalletID,
+		playerID:                       params.PlayerID,
+		amount:                         params.Money,
+		providerID:                     params.ProviderID,
+		externalTransactionID:          params.ExternalTransactionID,
+		idempotencyKey:                 params.IdempotencyKey,
+		payloadHash:                    params.PayloadHash,
+		roundID:                        params.RoundID,
+		gameID:                         params.GameID,
+		referenceExternalTransactionID: params.ReferenceExternalTransactionID,
+		referenceTransactionID:         params.ReferenceTransactionID,
+		failureCode:                    params.FailureCode,
+		resultBalance:                  params.ResultBalance,
+	}, nil
+}
+
+func validateKindAmount(kind Kind, amount money.Money) error {
+	if err := amount.Validate(); err != nil {
+		return err
+	}
+	if amount.IsNegative() {
+		return domain.ValidationError(domain.FailureCodeInvalidAmount,
+			"%s does not accept a negative amount, got %s", kind, amount)
+	}
+	if kind == KindLoss {
+		if !amount.IsZero() {
+			return domain.ValidationError(domain.FailureCodeInvalidAmount,
+				"LOSS requires a zero amount, got %s", amount)
+		}
+		return nil
+	}
+	if !amount.IsPositive() {
+		return domain.ValidationError(domain.FailureCodeInvalidAmount,
+			"%s requires an amount greater than zero, got %s", kind, amount)
+	}
+	return nil
+}
+
+func validateKindReference(kind Kind, reference string) error {
+	switch {
+	case kind.RequiresReference() && reference == "":
+		return domain.ValidationError(domain.FailureCodeInvalidInput,
+			"%s requires referenceExternalTransactionId", kind)
+	case !kind.AllowsReference() && reference != "":
+		return domain.ValidationError(domain.FailureCodeInvalidInput,
+			"%s does not accept referenceExternalTransactionId", kind)
+	default:
+		return nil
+	}
+}
+
+// MarkPendingReference records the wait for a reference not yet available.
+func (t *Transaction) MarkPendingReference() error {
+	if !t.kind.AllowsReference() {
+		return domain.ValidationError(domain.FailureCodeInvalidStateTransition,
+			"%s does not depend on a reference", t.kind)
+	}
+	return t.transitionTo(StatePendingReference)
+}
+
+// MarkProcessed concludes the operation successfully, keeping the observed
+// balance so that a replay returns the same result even after later movements.
+func (t *Transaction) MarkProcessed(balanceAfter money.Money) error {
+	if err := balanceAfter.Validate(); err != nil {
+		return err
+	}
+	if balanceAfter.Currency() != t.amount.Currency() {
+		return domain.ValidationError(domain.FailureCodeCurrencyMismatch,
+			"balance in %s does not match the operation currency %s", balanceAfter.Currency(), t.amount.Currency())
+	}
+	if err := t.transitionTo(StateProcessed); err != nil {
+		return err
+	}
+	balance := balanceAfter
+	t.resultBalance = &balance
+	return nil
+}
+
+// MarkRejected ends the operation by a business rule refusal.
+func (t *Transaction) MarkRejected(code domain.FailureCode) error {
+	if code == "" {
+		return domain.ValidationError(domain.FailureCodeInvalidInput, "a rejection requires a failureCode")
+	}
+	if err := t.transitionTo(StateRejected); err != nil {
+		return err
+	}
+	t.failureCode = code
+	return nil
+}
+
+// MarkFailed ends the operation by a permanent infrastructure failure, keeping
+// the record for auditing.
+func (t *Transaction) MarkFailed(code domain.FailureCode) error {
+	if code == "" {
+		return domain.ValidationError(domain.FailureCodeInvalidInput, "a failure requires a failureCode")
+	}
+	if err := t.transitionTo(StateFailed); err != nil {
+		return err
+	}
+	t.failureCode = code
+	return nil
+}
+
+// ResolveReference attaches the internal reference found for the operation.
+func (t *Transaction) ResolveReference(referenceID domain.ID) error {
+	if !t.kind.AllowsReference() {
+		return domain.ValidationError(domain.FailureCodeInvalidStateTransition,
+			"%s does not accept a reference", t.kind)
+	}
+	if err := domain.RequireID(referenceID, "referenceTransactionId"); err != nil {
+		return err
+	}
+	if t.state.IsTerminal() {
+		return domain.ValidationError(domain.FailureCodeInvalidStateTransition,
+			"operation in terminal state %s accepts no further changes", t.state)
+	}
+	t.referenceTransactionID = referenceID
+	return nil
+}
+
+func (t *Transaction) transitionTo(target State) error {
+	if t.state.IsTerminal() {
+		return domain.ValidationError(domain.FailureCodeInvalidStateTransition,
+			"operation in terminal state %s cannot transition to %s", t.state, target)
+	}
+	if !t.state.CanTransitionTo(target) {
+		return domain.ValidationError(domain.FailureCodeInvalidStateTransition,
+			"transition from %s to %s is not allowed", t.state, target)
+	}
+	t.state = target
+	return nil
+}
+
+func (t *Transaction) ID() domain.ID                   { return t.id }
+func (t *Transaction) Kind() Kind                      { return t.kind }
+func (t *Transaction) State() State                    { return t.state }
+func (t *Transaction) WalletID() domain.ID             { return t.walletID }
+func (t *Transaction) PlayerID() domain.ID             { return t.playerID }
+func (t *Transaction) Money() money.Money              { return t.amount }
+func (t *Transaction) ProviderID() string              { return t.providerID }
+func (t *Transaction) ExternalTransactionID() string   { return t.externalTransactionID }
+func (t *Transaction) IdempotencyKey() string          { return t.idempotencyKey }
+func (t *Transaction) PayloadHash() string             { return t.payloadHash }
+func (t *Transaction) RoundID() string                 { return t.roundID }
+func (t *Transaction) GameID() string                  { return t.gameID }
+func (t *Transaction) FailureCode() domain.FailureCode { return t.failureCode }
+
+// ReferenceExternalTransactionID returns the external reference supplied.
+func (t *Transaction) ReferenceExternalTransactionID() string {
+	return t.referenceExternalTransactionID
+}
+
+// ReferenceTransactionID returns the resolved internal reference, if any.
+func (t *Transaction) ReferenceTransactionID() (domain.ID, bool) {
+	if domain.IsNilID(t.referenceTransactionID) {
+		return domain.NilID, false
+	}
+	return t.referenceTransactionID, true
+}
+
+// ResultBalance returns the balance observed on conclusion, if any.
+func (t *Transaction) ResultBalance() (money.Money, bool) {
+	if t.resultBalance == nil {
+		return money.Money{}, false
+	}
+	return *t.resultBalance, true
+}
+
+// MovesBalance reports whether the kind changes the wallet balance. LOSS does
+// not.
+func (t *Transaction) MovesBalance() bool {
+	return t.kind != KindLoss
+}

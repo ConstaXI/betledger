@@ -18,6 +18,8 @@ import (
 
 	"github.com/davibanfi/betledger/api"
 	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/money"
+	"github.com/davibanfi/betledger/internal/domain/wallet"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
@@ -30,7 +32,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 	router, err := gorillamux.NewRouter(spec)
 	require.NoError(t, err)
 
-	opened, err := domain.OpenWallet(domain.NewID(), domain.NewID(), domain.MustMoney(100000, domain.MustCurrency("BRL")))
+	opened, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(100000, money.MustCurrency("BRL")))
 	require.NoError(t, err)
 
 	const validBody = `{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"1000.00","currency":"BRL"}}`

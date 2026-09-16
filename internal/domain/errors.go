@@ -1,3 +1,6 @@
+// Package domain holds what every part of the betledger business model shares:
+// identifiers and classifiable errors. The model itself lives in subpackages,
+// independent of Fx, HTTP, SQS and persistence libraries.
 package domain
 
 import (
@@ -34,6 +37,7 @@ const (
 	FailureCodeIdempotencyConflict    FailureCode = "IDEMPOTENCY_CONFLICT"
 	FailureCodeWalletAlreadyExists    FailureCode = "WALLET_ALREADY_EXISTS"
 	FailureCodeWalletNotFound         FailureCode = "WALLET_NOT_FOUND"
+	FailureCodeWalletPlayerMismatch   FailureCode = "WALLET_PLAYER_MISMATCH"
 	FailureCodeTransactionNotFound    FailureCode = "TRANSACTION_NOT_FOUND"
 )
 

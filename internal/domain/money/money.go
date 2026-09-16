@@ -1,54 +1,20 @@
-// Package domain holds the betledger business model, independent of Fx, HTTP,
-// SQS and persistence libraries.
-package domain
+// Package money implements the Money value object: an exact amount and its
+// currency, never represented in floating point.
+package money
 
 import (
 	"encoding/json"
 	"math"
 	"strings"
+
+	"github.com/davibanfi/betledger/internal/domain"
 )
 
 const (
-	// MoneyScale is the fixed number of decimal places of the external contract.
-	MoneyScale       = 2
-	moneyScaleFactor = 100
-	currencyCodeLen  = 3
+	// Scale is the fixed number of decimal places of the external contract.
+	Scale       = 2
+	scaleFactor = 100
 )
-
-// Currency is a validated ISO 4217 code.
-type Currency struct {
-	// code is the three-letter uppercase ISO 4217 code, empty when uninitialized.
-	code string
-}
-
-// NewCurrency validates an ISO 4217 code of three uppercase letters.
-func NewCurrency(code string) (Currency, error) {
-	if len(code) != currencyCodeLen {
-		return Currency{}, ValidationError(FailureCodeInvalidInput,
-			"currency %q is invalid: expected an ISO 4217 code with %d letters", code, currencyCodeLen)
-	}
-	for i := 0; i < len(code); i++ {
-		if code[i] < 'A' || code[i] > 'Z' {
-			return Currency{}, ValidationError(FailureCodeInvalidInput,
-				"currency %q is invalid: only uppercase letters are accepted", code)
-		}
-	}
-	return Currency{code: code}, nil
-}
-
-// MustCurrency panics on an invalid code. Use NewCurrency for external input.
-func MustCurrency(code string) Currency {
-	currency, err := NewCurrency(code)
-	if err != nil {
-		panic(err)
-	}
-	return currency
-}
-
-func (c Currency) String() string { return c.code }
-
-// IsZero reports whether the currency is uninitialized.
-func (c Currency) IsZero() bool { return c.code == "" }
 
 // Money is an immutable value object holding an amount and its currency, stored
 // as int64 minor units with a fixed scale of two decimal places. The
@@ -56,9 +22,9 @@ func (c Currency) IsZero() bool { return c.code == "" }
 // would exceed it return an error instead of truncating. No step uses floating
 // point.
 //
-// Parsing spans ±MaxInt64 minor units. MinInt64 is reachable only through
-// NewMoney, so its Amount is not parseable back; the domain invariants keep
-// balances away from that bound.
+// Parsing spans ±MaxInt64 minor units. MinInt64 is reachable only through New,
+// so its Amount is not parseable back; the domain invariants keep balances away
+// from that bound.
 type Money struct {
 	// minorUnits is the amount in the smallest currency unit, at a fixed scale of
 	// two decimal places.
@@ -68,21 +34,20 @@ type Money struct {
 	currency Currency
 }
 
-// ParseMoney builds Money from the external contract, accepting only
-// non-negative values. Equivalent forms ("25", "25.5", "25.50") are normalized
-// to the fixed scale, and the normalized form is the one used for the
-// idempotency hash.
-func ParseMoney(amount, currencyCode string) (Money, error) {
-	return parseMoney(amount, currencyCode, false)
+// Parse builds Money from the external contract, accepting only non-negative
+// values. Equivalent forms ("25", "25.5", "25.50") are normalized to the fixed
+// scale, and the normalized form is the one used for the idempotency hash.
+func Parse(amount, currencyCode string) (Money, error) {
+	return parse(amount, currencyCode, false)
 }
 
-// ParseSignedMoney also accepts negative values, for internal uses such as
+// ParseSigned also accepts negative values, for internal uses such as
 // reconciliation differences rather than external financial input.
-func ParseSignedMoney(amount, currencyCode string) (Money, error) {
-	return parseMoney(amount, currencyCode, true)
+func ParseSigned(amount, currencyCode string) (Money, error) {
+	return parse(amount, currencyCode, true)
 }
 
-func parseMoney(amount, currencyCode string, allowNegative bool) (Money, error) {
+func parse(amount, currencyCode string, allowNegative bool) (Money, error) {
 	currency, err := NewCurrency(currencyCode)
 	if err != nil {
 		return Money{}, err
@@ -94,40 +59,40 @@ func parseMoney(amount, currencyCode string, allowNegative bool) (Money, error) 
 	return Money{minorUnits: minorUnits, currency: currency}, nil
 }
 
-// NewMoney builds Money from already validated minor units, as when rehydrating
+// New builds Money from already validated minor units, as when rehydrating
 // from the database.
-func NewMoney(minorUnits int64, currency Currency) (Money, error) {
+func New(minorUnits int64, currency Currency) (Money, error) {
 	if currency.IsZero() {
-		return Money{}, ValidationError(FailureCodeInvalidInput, "currency is uninitialized")
+		return Money{}, domain.ValidationError(domain.FailureCodeInvalidInput, "currency is uninitialized")
 	}
 	return Money{minorUnits: minorUnits, currency: currency}, nil
 }
 
-// MustMoney panics when the currency is uninitialized. Use NewMoney outside of
-// tests and static initialization.
-func MustMoney(minorUnits int64, currency Currency) Money {
-	money, err := NewMoney(minorUnits, currency)
+// MustNew panics when the currency is uninitialized. Use New outside of tests
+// and static initialization.
+func MustNew(minorUnits int64, currency Currency) Money {
+	value, err := New(minorUnits, currency)
 	if err != nil {
 		panic(err)
 	}
-	return money
+	return value
 }
 
-// ZeroMoney returns the zero value of the given currency.
-func ZeroMoney(currency Currency) (Money, error) {
-	return NewMoney(0, currency)
+// Zero returns the zero value of the given currency.
+func Zero(currency Currency) (Money, error) {
+	return New(0, currency)
 }
 
 func parseMinorUnits(amount string, allowNegative bool) (int64, error) {
 	if amount == "" {
-		return 0, ValidationError(FailureCodeInvalidAmount, "empty monetary amount")
+		return 0, domain.ValidationError(domain.FailureCodeInvalidAmount, "empty monetary amount")
 	}
 
 	digits := amount
 	negative := false
 	if strings.HasPrefix(digits, "-") {
 		if !allowNegative {
-			return 0, ValidationError(FailureCodeInvalidAmount,
+			return 0, domain.ValidationError(domain.FailureCodeInvalidAmount,
 				"monetary amount %q cannot be negative", amount)
 		}
 		negative = true
@@ -138,35 +103,35 @@ func parseMinorUnits(amount string, allowNegative bool) (int64, error) {
 	if i := strings.IndexByte(digits, '.'); i >= 0 {
 		intPart, fracPart = digits[:i], digits[i+1:]
 		if strings.IndexByte(fracPart, '.') >= 0 {
-			return 0, ValidationError(FailureCodeInvalidAmount,
+			return 0, domain.ValidationError(domain.FailureCodeInvalidAmount,
 				"monetary amount %q has more than one decimal separator", amount)
 		}
 		if fracPart == "" {
-			return 0, ValidationError(FailureCodeInvalidAmount,
+			return 0, domain.ValidationError(domain.FailureCodeInvalidAmount,
 				"monetary amount %q has a decimal separator without decimals", amount)
 		}
-		if len(fracPart) > MoneyScale {
-			return 0, ValidationError(FailureCodeInvalidAmount,
-				"monetary amount %q exceeds the scale of %d decimal places", amount, MoneyScale)
+		if len(fracPart) > Scale {
+			return 0, domain.ValidationError(domain.FailureCodeInvalidAmount,
+				"monetary amount %q exceeds the scale of %d decimal places", amount, Scale)
 		}
 	}
 	if intPart == "" {
-		return 0, ValidationError(FailureCodeInvalidAmount,
+		return 0, domain.ValidationError(domain.FailureCodeInvalidAmount,
 			"monetary amount %q has no integer part", amount)
 	}
 
-	combined := intPart + fracPart + strings.Repeat("0", MoneyScale-len(fracPart))
+	combined := intPart + fracPart + strings.Repeat("0", Scale-len(fracPart))
 
 	var minorUnits int64
 	for i := 0; i < len(combined); i++ {
 		char := combined[i]
 		if char < '0' || char > '9' {
-			return 0, ValidationError(FailureCodeInvalidAmount,
+			return 0, domain.ValidationError(domain.FailureCodeInvalidAmount,
 				"monetary amount %q contains an invalid character", amount)
 		}
 		digit := int64(char - '0')
 		if minorUnits > (math.MaxInt64-digit)/10 {
-			return 0, ValidationError(FailureCodeAmountOverflow,
+			return 0, domain.ValidationError(domain.FailureCodeAmountOverflow,
 				"monetary amount %q exceeds the representable range", amount)
 		}
 		minorUnits = minorUnits*10 + digit
@@ -181,7 +146,7 @@ func parseMinorUnits(amount string, allowNegative bool) (int64, error) {
 // Validate rejects an uninitialized Money.
 func (m Money) Validate() error {
 	if m.currency.IsZero() {
-		return ValidationError(FailureCodeInvalidInput, "monetary amount is uninitialized")
+		return domain.ValidationError(domain.FailureCodeInvalidInput, "monetary amount is uninitialized")
 	}
 	return nil
 }
@@ -206,8 +171,8 @@ func (m Money) Amount() string {
 		abs = uint64(units)
 	}
 
-	whole := abs / moneyScaleFactor
-	frac := abs % moneyScaleFactor
+	whole := abs / scaleFactor
+	frac := abs % scaleFactor
 	var builder strings.Builder
 	builder.WriteString(sign)
 	builder.WriteString(formatUint(whole))
@@ -245,7 +210,7 @@ func (m Money) Add(other Money) (Money, error) {
 	}
 	if (other.minorUnits > 0 && m.minorUnits > math.MaxInt64-other.minorUnits) ||
 		(other.minorUnits < 0 && m.minorUnits < math.MinInt64-other.minorUnits) {
-		return Money{}, ValidationError(FailureCodeAmountOverflow,
+		return Money{}, domain.ValidationError(domain.FailureCodeAmountOverflow,
 			"adding %s to %s exceeds the representable range", m, other)
 	}
 	return Money{minorUnits: m.minorUnits + other.minorUnits, currency: m.currency}, nil
@@ -258,7 +223,7 @@ func (m Money) Sub(other Money) (Money, error) {
 	}
 	if (other.minorUnits < 0 && m.minorUnits > math.MaxInt64+other.minorUnits) ||
 		(other.minorUnits > 0 && m.minorUnits < math.MinInt64+other.minorUnits) {
-		return Money{}, ValidationError(FailureCodeAmountOverflow,
+		return Money{}, domain.ValidationError(domain.FailureCodeAmountOverflow,
 			"subtracting %s from %s exceeds the representable range", m, other)
 	}
 	return Money{minorUnits: m.minorUnits - other.minorUnits, currency: m.currency}, nil
@@ -270,7 +235,7 @@ func (m Money) Neg() (Money, error) {
 		return Money{}, err
 	}
 	if m.minorUnits == math.MinInt64 {
-		return Money{}, ValidationError(FailureCodeAmountOverflow,
+		return Money{}, domain.ValidationError(domain.FailureCodeAmountOverflow,
 			"negating %s exceeds the representable range", m)
 	}
 	return Money{minorUnits: -m.minorUnits, currency: m.currency}, nil
@@ -313,7 +278,7 @@ func (m Money) requireSameCurrency(other Money) error {
 		return err
 	}
 	if m.currency != other.currency {
-		return ValidationError(FailureCodeCurrencyMismatch,
+		return domain.ValidationError(domain.FailureCodeCurrencyMismatch,
 			"incompatible currencies: %s and %s", m.currency, other.currency)
 	}
 	return nil
@@ -327,7 +292,7 @@ type moneyJSON struct {
 // MarshalJSON serializes to the external contract
 // {"amount":"25.00","currency":"BRL"}. It exists because the fields are
 // unexported; decoding is deliberately absent, so external input always goes
-// through ParseMoney.
+// through Parse.
 func (m Money) MarshalJSON() ([]byte, error) {
 	if err := m.Validate(); err != nil {
 		return nil, err

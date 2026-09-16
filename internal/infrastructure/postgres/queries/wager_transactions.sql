@@ -36,3 +36,15 @@ INSERT INTO wager_transactions (
     sqlc.narg(failure_code),
     sqlc.narg(result_balance_minor)
 );
+
+-- name: SelectWagerTransactionByIdempotencyKey :one
+SELECT *
+FROM wager_transactions
+WHERE provider_id = @provider_id
+  AND idempotency_key = @idempotency_key;
+
+-- name: SelectWagerTransactionByExternalID :one
+SELECT *
+FROM wager_transactions
+WHERE provider_id = @provider_id
+  AND external_transaction_id = @external_transaction_id;

@@ -9,6 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/event"
+	"github.com/davibanfi/betledger/internal/domain/ledger"
+	"github.com/davibanfi/betledger/internal/domain/money"
+	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
@@ -17,7 +21,7 @@ var fixedNow = time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 func TestOpenWalletExecute(t *testing.T) {
 	t.Parallel()
 
-	brl := domain.MustCurrency("BRL")
+	brl := money.MustCurrency("BRL")
 
 	tests := []struct {
 		name             string
@@ -29,33 +33,33 @@ func TestOpenWalletExecute(t *testing.T) {
 		wantWallets      int
 		wantTransactions int
 		wantEntries      int
-		wantEventTypes   []domain.EventType
+		wantEventTypes   []event.Type
 	}{
 		{
 			name:             "should record the opening when the initial balance is positive",
-			input:            usecase.OpenWalletInput{PlayerID: domain.NewID(), InitialBalance: domain.MustMoney(100000, brl), CorrelationID: "req-1"},
+			input:            usecase.OpenWalletInput{PlayerID: domain.NewID(), InitialBalance: money.MustNew(100000, brl), CorrelationID: "req-1"},
 			wantCalls:        1,
 			wantWallets:      1,
 			wantTransactions: 1,
 			wantEntries:      1,
-			wantEventTypes:   []domain.EventType{domain.EventTypeWagerTransactionProcessed, domain.EventTypeWalletBalanceChanged},
+			wantEventTypes:   []event.Type{event.TypeWagerTransactionProcessed, event.TypeWalletBalanceChanged},
 		},
 		{
 			name:        "should accept without opening records when the initial balance is zero",
-			input:       usecase.OpenWalletInput{PlayerID: domain.NewID(), InitialBalance: domain.MustMoney(0, brl), CorrelationID: "req-1"},
+			input:       usecase.OpenWalletInput{PlayerID: domain.NewID(), InitialBalance: money.MustNew(0, brl), CorrelationID: "req-1"},
 			wantCalls:   1,
 			wantWallets: 1,
 		},
 		{
 			name:      "should return WALLET_ALREADY_EXISTS when the player already has a wallet in the currency",
-			input:     usecase.OpenWalletInput{PlayerID: domain.NewID(), InitialBalance: domain.MustMoney(100000, brl), CorrelationID: "req-1"},
+			input:     usecase.OpenWalletInput{PlayerID: domain.NewID(), InitialBalance: money.MustNew(100000, brl), CorrelationID: "req-1"},
 			walletErr: domain.ConflictError(domain.FailureCodeWalletAlreadyExists, "wallet already exists"),
 			wantErr:   domain.FailureCodeWalletAlreadyExists,
 			wantCalls: 1,
 		},
 		{
 			name:      "should return INVALID_INPUT when the player id is nil",
-			input:     usecase.OpenWalletInput{PlayerID: domain.NilID, InitialBalance: domain.MustMoney(100000, brl), CorrelationID: "req-1"},
+			input:     usecase.OpenWalletInput{PlayerID: domain.NilID, InitialBalance: money.MustNew(100000, brl), CorrelationID: "req-1"},
 			wantErr:   domain.FailureCodeInvalidInput,
 			wantCalls: 0,
 		},
@@ -67,13 +71,13 @@ func TestOpenWalletExecute(t *testing.T) {
 		},
 		{
 			name:      "should return INVALID_INPUT when correlationId is missing",
-			input:     usecase.OpenWalletInput{PlayerID: domain.NewID(), InitialBalance: domain.MustMoney(100000, brl)},
+			input:     usecase.OpenWalletInput{PlayerID: domain.NewID(), InitialBalance: money.MustNew(100000, brl)},
 			wantErr:   domain.FailureCodeInvalidInput,
 			wantCalls: 0,
 		},
 		{
 			name:      "should persist nothing when the outbox is unavailable",
-			input:     usecase.OpenWalletInput{PlayerID: domain.NewID(), InitialBalance: domain.MustMoney(100000, brl), CorrelationID: "req-1"},
+			input:     usecase.OpenWalletInput{PlayerID: domain.NewID(), InitialBalance: money.MustNew(100000, brl), CorrelationID: "req-1"},
 			outboxErr: usecase.ErrUnavailable,
 			wantErr:   usecase.ErrUnavailable,
 			wantCalls: 1,
@@ -84,7 +88,7 @@ func TestOpenWalletExecute(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			transactor := &fakeTransactor{}
+			transactor := newFakeTransactor()
 			uc := usecase.NewOpenWallet(transactor, fakeWallets{err: test.walletErr}, fakeTransactions{},
 				fakeLedger{}, fakeOutbox{err: test.outboxErr}, func() time.Time { return fixedNow })
 
@@ -103,14 +107,14 @@ func TestOpenWalletExecute(t *testing.T) {
 func TestOpenWalletRecordsConsistentOpening(t *testing.T) {
 	t.Parallel()
 
-	brl := domain.MustCurrency("BRL")
-	initial := domain.MustMoney(100000, brl)
+	brl := money.MustCurrency("BRL")
+	initial := money.MustNew(100000, brl)
 	playerID := domain.NewID()
-	transactor := &fakeTransactor{}
+	transactor := newFakeTransactor()
 	uc := usecase.NewOpenWallet(transactor, fakeWallets{}, fakeTransactions{}, fakeLedger{}, fakeOutbox{},
 		func() time.Time { return fixedNow })
 
-	wallet, err := uc.Execute(context.Background(), usecase.OpenWalletInput{PlayerID: playerID, InitialBalance: initial, CorrelationID: "req-1"})
+	w, err := uc.Execute(context.Background(), usecase.OpenWalletInput{PlayerID: playerID, InitialBalance: initial, CorrelationID: "req-1"})
 
 	require.NoError(t, err)
 	require.Len(t, transactor.committed.wallets, 1)
@@ -118,25 +122,25 @@ func TestOpenWalletRecordsConsistentOpening(t *testing.T) {
 	require.Len(t, transactor.committed.entries, 1)
 	require.Len(t, transactor.committed.events, 2)
 
-	assert.Same(t, wallet, transactor.committed.wallets[0])
-	assert.Equal(t, playerID, wallet.PlayerID())
-	assert.Equal(t, initial, wallet.Balance())
-	assert.Equal(t, int64(1), wallet.Version())
+	assert.Equal(t, w.Balance(), transactor.committed.wallets[w.ID()].Balance())
+	assert.Equal(t, playerID, w.PlayerID())
+	assert.Equal(t, initial, w.Balance())
+	assert.Equal(t, int64(1), w.Version())
 
 	transaction := transactor.committed.transactions[0]
-	assert.Equal(t, domain.KindOpening, transaction.Kind())
-	assert.Equal(t, domain.StateProcessed, transaction.State())
-	assert.Equal(t, wallet.ID(), transaction.WalletID())
+	assert.Equal(t, wager.KindOpening, transaction.Kind())
+	assert.Equal(t, wager.StateProcessed, transaction.State())
+	assert.Equal(t, w.ID(), transaction.WalletID())
 
 	entry := transactor.committed.entries[0]
 	assert.Equal(t, transaction.ID(), entry.TransactionID())
-	assert.Equal(t, domain.DirectionCredit, entry.Direction())
-	assert.Equal(t, domain.MustMoney(0, brl), entry.BalanceBefore())
+	assert.Equal(t, ledger.Credit, entry.Direction())
+	assert.Equal(t, money.MustNew(0, brl), entry.BalanceBefore())
 	assert.Equal(t, initial, entry.BalanceAfter())
 
-	for _, event := range transactor.committed.events {
-		assert.Equal(t, wallet.ID(), event.AggregateID)
-		assert.Equal(t, "req-1", event.CorrelationID)
-		assert.Equal(t, fixedNow, event.OccurredAt)
+	for _, e := range transactor.committed.events {
+		assert.Equal(t, w.ID(), e.AggregateID)
+		assert.Equal(t, "req-1", e.CorrelationID)
+		assert.Equal(t, fixedNow, e.OccurredAt)
 	}
 }

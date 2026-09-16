@@ -6,11 +6,13 @@ import (
 	"net/http"
 
 	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/money"
+	"github.com/davibanfi/betledger/internal/domain/wallet"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
 type walletOpener interface {
-	Execute(ctx context.Context, input usecase.OpenWalletInput) (*domain.Wallet, error)
+	Execute(ctx context.Context, input usecase.OpenWalletInput) (*wallet.Wallet, error)
 }
 
 // WalletHandler serves the wallet endpoints.
@@ -40,10 +42,10 @@ type openWalletRequest struct {
 }
 
 type walletResponse struct {
-	ID       string       `json:"id"`
-	PlayerID string       `json:"playerId"`
-	Balance  domain.Money `json:"balance"`
-	Version  int64        `json:"version"`
+	ID       string      `json:"id"`
+	PlayerID string      `json:"playerId"`
+	Balance  money.Money `json:"balance"`
+	Version  int64       `json:"version"`
 }
 
 func (h *WalletHandler) handleOpenWallet(w http.ResponseWriter, r *http.Request) {
@@ -58,13 +60,13 @@ func (h *WalletHandler) handleOpenWallet(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, h.logger, err)
 		return
 	}
-	initialBalance, err := domain.ParseMoney(request.InitialBalance.Amount, request.InitialBalance.Currency)
+	initialBalance, err := money.Parse(request.InitialBalance.Amount, request.InitialBalance.Currency)
 	if err != nil {
 		writeError(w, r, h.logger, err)
 		return
 	}
 
-	wallet, err := h.openWallet.Execute(r.Context(), usecase.OpenWalletInput{
+	opened, err := h.openWallet.Execute(r.Context(), usecase.OpenWalletInput{
 		PlayerID:       playerID,
 		InitialBalance: initialBalance,
 		CorrelationID:  correlationID(r.Context()),
@@ -74,12 +76,12 @@ func (h *WalletHandler) handleOpenWallet(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	w.Header().Set("Location", "/wallets/"+wallet.ID().String())
+	w.Header().Set("Location", "/wallets/"+opened.ID().String())
 	err = writeJSON(w, http.StatusCreated, walletResponse{
-		ID:       wallet.ID().String(),
-		PlayerID: wallet.PlayerID().String(),
-		Balance:  wallet.Balance(),
-		Version:  wallet.Version(),
+		ID:       opened.ID().String(),
+		PlayerID: opened.PlayerID().String(),
+		Balance:  opened.Balance(),
+		Version:  opened.Version(),
 	})
 	if err != nil {
 		writeError(w, r, h.logger, err)

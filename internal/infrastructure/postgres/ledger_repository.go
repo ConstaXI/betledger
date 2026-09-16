@@ -3,7 +3,7 @@ package postgres
 import (
 	"context"
 
-	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/ledger"
 	"github.com/davibanfi/betledger/internal/infrastructure/postgres/sqlcgen"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
@@ -20,7 +20,7 @@ func NewLedgerRepository() *LedgerRepository {
 }
 
 // Append inserts the entry within the transaction carried by ctx.
-func (r *LedgerRepository) Append(ctx context.Context, entry *domain.WalletLedgerEntry) error {
+func (r *LedgerRepository) Append(ctx context.Context, entry *ledger.Entry) error {
 	q, err := queries(ctx)
 	if err != nil {
 		return err

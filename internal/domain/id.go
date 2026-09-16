@@ -30,7 +30,8 @@ func ParseID(value string) (ID, error) {
 // IsNilID reports whether the identifier is uninitialized.
 func IsNilID(id ID) bool { return id == NilID }
 
-func requireID(id ID, field string) error {
+// RequireID rejects an uninitialized identifier, naming the field in the error.
+func RequireID(id ID, field string) error {
 	if IsNilID(id) {
 		return ValidationError(FailureCodeInvalidInput, "%s is required", field)
 	}

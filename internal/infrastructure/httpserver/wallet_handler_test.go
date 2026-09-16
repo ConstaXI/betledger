@@ -14,17 +14,19 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/money"
+	"github.com/davibanfi/betledger/internal/domain/wallet"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
 type fakeWalletOpener struct {
-	wallet *domain.Wallet
+	wallet *wallet.Wallet
 	err    error
 	calls  int
 	input  usecase.OpenWalletInput
 }
 
-func (f *fakeWalletOpener) Execute(_ context.Context, input usecase.OpenWalletInput) (*domain.Wallet, error) {
+func (f *fakeWalletOpener) Execute(_ context.Context, input usecase.OpenWalletInput) (*wallet.Wallet, error) {
 	f.calls++
 	f.input = input
 	return f.wallet, f.err
@@ -47,7 +49,7 @@ func TestOpenWalletHandler(t *testing.T) {
 
 	const validBody = `{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"1000.00","currency":"BRL"}}`
 
-	opened, err := domain.OpenWallet(domain.NewID(), domain.NewID(), domain.MustMoney(100000, domain.MustCurrency("BRL")))
+	opened, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(100000, money.MustCurrency("BRL")))
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -159,7 +161,7 @@ func TestOpenWalletHandler(t *testing.T) {
 func TestOpenWalletHandlerPassesCorrelationIDToTheUseCase(t *testing.T) {
 	t.Parallel()
 
-	opened, err := domain.OpenWallet(domain.NewID(), domain.NewID(), domain.MustMoney(0, domain.MustCurrency("BRL")))
+	opened, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(0, money.MustCurrency("BRL")))
 	require.NoError(t, err)
 	opener := &fakeWalletOpener{wallet: opened}
 	handler := NewHandler(

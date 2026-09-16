@@ -1,4 +1,4 @@
-package domain_test
+package event_test
 
 import (
 	"encoding/json"
@@ -9,6 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/domaintest"
+	"github.com/davibanfi/betledger/internal/domain/event"
+	"github.com/davibanfi/betledger/internal/domain/ledger"
+	"github.com/davibanfi/betledger/internal/domain/wager"
 )
 
 func TestNewWagerTransactionProcessedEvent(t *testing.T) {
@@ -18,7 +22,7 @@ func TestNewWagerTransactionProcessedEvent(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		transaction   func(t *testing.T) *domain.WagerTransaction
+		transaction   func(t *testing.T) *wager.Transaction
 		correlationID string
 		occurredAt    time.Time
 		wantErr       error
@@ -30,8 +34,10 @@ func TestNewWagerTransactionProcessedEvent(t *testing.T) {
 			occurredAt:    occurredAt,
 		},
 		{
-			name:          "should return INVALID_STATE_TRANSITION when the transaction is still pending",
-			transaction:   func(t *testing.T) *domain.WagerTransaction { return mustTransaction(t, domain.KindBet, "25.00") },
+			name: "should return INVALID_STATE_TRANSITION when the transaction is still pending",
+			transaction: func(t *testing.T) *wager.Transaction {
+				return domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
+			},
 			correlationID: "correlation-1",
 			occurredAt:    occurredAt,
 			wantErr:       domain.FailureCodeInvalidStateTransition,
@@ -56,11 +62,11 @@ func TestNewWagerTransactionProcessedEvent(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := domain.NewWagerTransactionProcessedEvent(test.transaction(t), test.correlationID, test.occurredAt)
+			got, err := event.NewWagerTransactionProcessed(test.transaction(t), test.correlationID, test.occurredAt)
 
 			assert.ErrorIs(t, err, test.wantErr)
 			if test.wantErr == nil {
-				assert.Equal(t, domain.EventTypeWagerTransactionProcessed, got.EventType)
+				assert.Equal(t, event.TypeWagerTransactionProcessed, got.Type)
 				assert.Equal(t, 1, got.Version)
 			}
 		})
@@ -72,21 +78,21 @@ func TestNewWagerTransactionRejectedEvent(t *testing.T) {
 
 	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 
-	rejected := mustTransaction(t, domain.KindBet, "25.00")
+	rejected := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
 	require.NoError(t, rejected.MarkRejected(domain.FailureCodeInsufficientFunds))
 
-	got, err := domain.NewWagerTransactionRejectedEvent(rejected, "correlation-1", occurredAt)
+	got, err := event.NewWagerTransactionRejected(rejected, "correlation-1", occurredAt)
 
 	require.NoError(t, err)
-	assert.Equal(t, domain.EventTypeWagerTransactionRejected, got.EventType)
+	assert.Equal(t, event.TypeWagerTransactionRejected, got.Type)
 	assert.Equal(t, rejected.WalletID(), got.AggregateID)
 
-	data, ok := got.Data.(domain.WagerTransactionRejectedData)
+	data, ok := got.Data.(event.WagerTransactionRejectedData)
 	require.True(t, ok)
 	assert.Equal(t, domain.FailureCodeInsufficientFunds, data.FailureCode)
 
-	pending := mustTransaction(t, domain.KindBet, "25.00")
-	_, err = domain.NewWagerTransactionRejectedEvent(pending, "correlation-1", occurredAt)
+	pending := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
+	_, err = event.NewWagerTransactionRejected(pending, "correlation-1", occurredAt)
 	assert.ErrorIs(t, err, domain.FailureCodeInvalidStateTransition)
 }
 
@@ -95,15 +101,15 @@ func TestNewWagerTransactionPendingReferenceEvent(t *testing.T) {
 
 	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 
-	transaction := mustTransaction(t, domain.KindRefund, "25.00")
+	transaction := domaintest.MustExternalTransaction(t, wager.KindRefund, "25.00")
 	require.NoError(t, transaction.MarkPendingReference())
 
-	got, err := domain.NewWagerTransactionPendingReferenceEvent(transaction, "correlation-1", occurredAt)
+	got, err := event.NewWagerTransactionPendingReference(transaction, "correlation-1", occurredAt)
 
 	require.NoError(t, err)
-	assert.Equal(t, domain.EventTypeWagerTransactionPendingReference, got.EventType)
+	assert.Equal(t, event.TypeWagerTransactionPendingReference, got.Type)
 
-	data, ok := got.Data.(domain.WagerTransactionPendingReferenceData)
+	data, ok := got.Data.(event.WagerTransactionPendingReferenceData)
 	require.True(t, ok)
 	assert.Equal(t, "transaction-122", data.ReferenceExternalTransactionID)
 }
@@ -113,22 +119,22 @@ func TestNewWalletBalanceChangedEvent(t *testing.T) {
 
 	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 
-	wallet := mustWallet(t, mustMoney(t, "100.00", "BRL"))
-	entry, err := wallet.Debit(mustMoney(t, "25.00", "BRL"), domain.NewID())
+	wallet := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
+	entry, err := wallet.Debit(domaintest.MustParseMoney(t, "25.00", "BRL"), domain.NewID())
 	require.NoError(t, err)
 
-	got, err := domain.NewWalletBalanceChangedEvent(wallet, entry, "correlation-1", occurredAt)
+	got, err := event.NewWalletBalanceChanged(wallet, entry, "correlation-1", occurredAt)
 
 	require.NoError(t, err)
-	assert.Equal(t, domain.EventTypeWalletBalanceChanged, got.EventType)
+	assert.Equal(t, event.TypeWalletBalanceChanged, got.Type)
 	assert.Equal(t, wallet.ID(), got.AggregateID)
 
-	data, ok := got.Data.(domain.WalletBalanceChangedData)
+	data, ok := got.Data.(event.WalletBalanceChangedData)
 	require.True(t, ok)
-	assert.Equal(t, domain.DirectionDebit, data.Direction)
-	assert.Equal(t, mustMoney(t, "25.00", "BRL"), data.Money)
-	assert.Equal(t, mustMoney(t, "100.00", "BRL"), data.BalanceBefore)
-	assert.Equal(t, mustMoney(t, "75.00", "BRL"), data.BalanceAfter)
+	assert.Equal(t, ledger.Debit, data.Direction)
+	assert.Equal(t, domaintest.MustParseMoney(t, "25.00", "BRL"), data.Money)
+	assert.Equal(t, domaintest.MustParseMoney(t, "100.00", "BRL"), data.BalanceBefore)
+	assert.Equal(t, domaintest.MustParseMoney(t, "75.00", "BRL"), data.BalanceAfter)
 	assert.Equal(t, int64(2), data.WalletVersion)
 }
 
@@ -137,12 +143,12 @@ func TestWalletBalanceChangedEventRejectsForeignEntry(t *testing.T) {
 
 	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 
-	wallet := mustWallet(t, mustMoney(t, "100.00", "BRL"))
-	other := mustWallet(t, mustMoney(t, "100.00", "BRL"))
-	entry, err := other.Debit(mustMoney(t, "25.00", "BRL"), domain.NewID())
+	wallet := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
+	other := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
+	entry, err := other.Debit(domaintest.MustParseMoney(t, "25.00", "BRL"), domain.NewID())
 	require.NoError(t, err)
 
-	_, err = domain.NewWalletBalanceChangedEvent(wallet, entry, "correlation-1", occurredAt)
+	_, err = event.NewWalletBalanceChanged(wallet, entry, "correlation-1", occurredAt)
 
 	assert.ErrorIs(t, err, domain.FailureCodeInvalidInput)
 }
@@ -152,11 +158,11 @@ func TestEventMarshalJSON(t *testing.T) {
 
 	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 
-	wallet := mustWallet(t, mustMoney(t, "100.00", "BRL"))
-	entry, err := wallet.Debit(mustMoney(t, "25.00", "BRL"), domain.NewID())
+	wallet := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
+	entry, err := wallet.Debit(domaintest.MustParseMoney(t, "25.00", "BRL"), domain.NewID())
 	require.NoError(t, err)
 
-	event, err := domain.NewWalletBalanceChangedEvent(wallet, entry, "correlation-1", occurredAt)
+	event, err := event.NewWalletBalanceChanged(wallet, entry, "correlation-1", occurredAt)
 	require.NoError(t, err)
 
 	encoded, err := json.Marshal(event)
@@ -184,7 +190,7 @@ func TestEventOccurredAtIsNormalizedToUTC(t *testing.T) {
 	occurredAt := time.Date(2026, 9, 8, 9, 0, 0, 0, saoPaulo)
 
 	transaction := processedTransaction(t)
-	event, err := domain.NewWagerTransactionProcessedEvent(transaction, "correlation-1", occurredAt)
+	event, err := event.NewWagerTransactionProcessed(transaction, "correlation-1", occurredAt)
 	require.NoError(t, err)
 
 	encoded, err := json.Marshal(event)
@@ -202,26 +208,26 @@ func TestEventWithCausationDoesNotMutate(t *testing.T) {
 
 	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 
-	event, err := domain.NewWagerTransactionProcessedEvent(processedTransaction(t), "correlation-1", occurredAt)
+	event, err := event.NewWagerTransactionProcessed(processedTransaction(t), "correlation-1", occurredAt)
 	require.NoError(t, err)
 
 	caused := event.WithCausation("msg-123")
 
 	assert.Equal(t, "msg-123", caused.CausationID)
 	assert.Empty(t, event.CausationID, "the original event must stay an immutable snapshot")
-	assert.Equal(t, event.EventID, caused.EventID)
+	assert.Equal(t, event.ID, caused.ID)
 }
 
 func TestOpeningEventCarriesNoProviderMetadata(t *testing.T) {
 	t.Parallel()
 
 	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
-	initial := mustMoney(t, "1000.00", "BRL")
+	initial := domaintest.MustParseMoney(t, "1000.00", "BRL")
 
-	transaction, err := domain.NewOpeningTransaction(domain.NewID(), domain.NewID(), domain.NewID(), initial)
+	transaction, err := wager.NewOpening(domain.NewID(), domain.NewID(), domain.NewID(), initial)
 	require.NoError(t, err)
 
-	event, err := domain.NewWagerTransactionProcessedEvent(transaction, "correlation-1", occurredAt)
+	event, err := event.NewWagerTransactionProcessed(transaction, "correlation-1", occurredAt)
 	require.NoError(t, err)
 
 	encoded, err := json.Marshal(event)
@@ -237,10 +243,10 @@ func TestOpeningEventCarriesNoProviderMetadata(t *testing.T) {
 	}
 }
 
-func processedTransaction(t *testing.T) *domain.WagerTransaction {
+func processedTransaction(t *testing.T) *wager.Transaction {
 	t.Helper()
 
-	transaction := mustTransaction(t, domain.KindBet, "25.00")
-	require.NoError(t, transaction.MarkProcessed(mustMoney(t, "75.00", "BRL")))
+	transaction := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
+	require.NoError(t, transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL")))
 	return transaction
 }

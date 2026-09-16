@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/event"
 	"github.com/davibanfi/betledger/internal/infrastructure/postgres/sqlcgen"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
@@ -22,23 +22,23 @@ func NewOutboxRepository() *OutboxRepository {
 }
 
 // Append inserts the events within the transaction carried by ctx.
-func (r *OutboxRepository) Append(ctx context.Context, events ...domain.Event) error {
+func (r *OutboxRepository) Append(ctx context.Context, events ...event.Event) error {
 	q, err := queries(ctx)
 	if err != nil {
 		return err
 	}
 
-	for _, event := range events {
-		payload, err := json.Marshal(event)
+	for _, e := range events {
+		payload, err := json.Marshal(e)
 		if err != nil {
-			return fmt.Errorf("encode event %s: %w", event.EventID, err)
+			return fmt.Errorf("encode event %s: %w", e.ID, err)
 		}
 		err = q.InsertOutboxEvent(ctx, sqlcgen.InsertOutboxEventParams{
-			ID:          event.EventID,
-			AggregateID: event.AggregateID,
-			EventType:   event.EventType.String(),
+			ID:          e.ID,
+			AggregateID: e.AggregateID,
+			EventType:   e.Type.String(),
 			Payload:     payload,
-			OccurredAt:  event.OccurredAt,
+			OccurredAt:  e.OccurredAt,
 		})
 		if err != nil {
 			return translate(err)

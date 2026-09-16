@@ -4,12 +4,16 @@ import (
 	"context"
 
 	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/event"
+	"github.com/davibanfi/betledger/internal/domain/money"
+	"github.com/davibanfi/betledger/internal/domain/wager"
+	"github.com/davibanfi/betledger/internal/domain/wallet"
 )
 
 // OpenWalletInput is the request to open a wallet.
 type OpenWalletInput struct {
 	PlayerID       domain.ID
-	InitialBalance domain.Money
+	InitialBalance money.Money
 	CorrelationID  string
 }
 
@@ -45,25 +49,25 @@ func NewOpenWallet(
 }
 
 // Execute opens the wallet.
-func (uc *OpenWallet) Execute(ctx context.Context, input OpenWalletInput) (*domain.Wallet, error) {
+func (uc *OpenWallet) Execute(ctx context.Context, input OpenWalletInput) (*wallet.Wallet, error) {
 	if input.CorrelationID == "" {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "correlationId is required")
 	}
 
-	wallet, err := domain.OpenWallet(domain.NewID(), input.PlayerID, input.InitialBalance)
+	w, err := wallet.Open(domain.NewID(), input.PlayerID, input.InitialBalance)
 	if err != nil {
 		return nil, err
 	}
 
 	err = uc.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
-		if err := uc.wallets.Create(ctx, wallet); err != nil {
+		if err := uc.wallets.Create(ctx, w); err != nil {
 			return err
 		}
-		if !wallet.Balance().IsPositive() {
+		if !w.Balance().IsPositive() {
 			return nil
 		}
 
-		opening, err := domain.NewOpeningTransaction(domain.NewID(), wallet.ID(), wallet.PlayerID(), wallet.Balance())
+		opening, err := wager.NewOpening(domain.NewID(), w.ID(), w.PlayerID(), w.Balance())
 		if err != nil {
 			return err
 		}
@@ -71,7 +75,7 @@ func (uc *OpenWallet) Execute(ctx context.Context, input OpenWalletInput) (*doma
 			return err
 		}
 
-		credit, err := wallet.OpeningLedgerEntry(opening.ID())
+		credit, err := w.OpeningLedgerEntry(opening.ID())
 		if err != nil {
 			return err
 		}
@@ -80,11 +84,11 @@ func (uc *OpenWallet) Execute(ctx context.Context, input OpenWalletInput) (*doma
 		}
 
 		occurredAt := uc.clock()
-		processed, err := domain.NewWagerTransactionProcessedEvent(opening, input.CorrelationID, occurredAt)
+		processed, err := event.NewWagerTransactionProcessed(opening, input.CorrelationID, occurredAt)
 		if err != nil {
 			return err
 		}
-		balanceChanged, err := domain.NewWalletBalanceChangedEvent(wallet, credit, input.CorrelationID, occurredAt)
+		balanceChanged, err := event.NewWalletBalanceChanged(w, credit, input.CorrelationID, occurredAt)
 		if err != nil {
 			return err
 		}
@@ -94,5 +98,5 @@ func (uc *OpenWallet) Execute(ctx context.Context, input OpenWalletInput) (*doma
 		return nil, err
 	}
 
-	return wallet, nil
+	return w, nil
 }
