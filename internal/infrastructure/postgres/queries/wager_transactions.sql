@@ -1,0 +1,38 @@
+-- name: InsertWagerTransaction :exec
+INSERT INTO wager_transactions (
+    id,
+    kind,
+    state,
+    wallet_id,
+    player_id,
+    currency,
+    amount_minor,
+    provider_id,
+    external_transaction_id,
+    idempotency_key,
+    payload_hash,
+    round_id,
+    game_id,
+    reference_external_transaction_id,
+    reference_transaction_id,
+    failure_code,
+    result_balance_minor
+) VALUES (
+    @id,
+    @kind,
+    @state,
+    @wallet_id,
+    @player_id,
+    @currency,
+    @amount_minor,
+    sqlc.narg(provider_id),
+    sqlc.narg(external_transaction_id),
+    sqlc.narg(idempotency_key),
+    sqlc.narg(payload_hash),
+    sqlc.narg(round_id),
+    sqlc.narg(game_id),
+    sqlc.narg(reference_external_transaction_id),
+    sqlc.narg(reference_transaction_id),
+    sqlc.narg(failure_code),
+    sqlc.narg(result_balance_minor)
+);
