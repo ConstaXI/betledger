@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -149,4 +150,28 @@ func (c *Client) PostWager(input usecase.ProcessWagerInput, authorization string
 
 func httpClient() *http.Client {
 	return &http.Client{Timeout: 10 * time.Second}
+}
+
+// Read sends a GET authenticated as the realm client and returns the status and
+// the body, for the endpoints the tests only inspect.
+func (c *Client) Read(t *testing.T, path, clientID string) (int, string) {
+	t.Helper()
+
+	return c.Send(t, http.MethodGet, path, clientID)
+}
+
+// Send sends a request with no body, authenticated as the realm client.
+func (c *Client) Send(t *testing.T, method, path, clientID string) (int, string) {
+	t.Helper()
+
+	request, err := http.NewRequest(method, c.BaseURL+path, nil)
+	require.NoError(t, err)
+	request.Header.Set("Authorization", c.identityProvider.Bearer(t, clientID))
+
+	response, err := httpClient().Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	return response.StatusCode, string(body)
 }

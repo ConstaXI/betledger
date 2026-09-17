@@ -7,6 +7,7 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -56,4 +57,59 @@ func (q *Queries) InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryPa
 		arg.BalanceAfterMinor,
 	)
 	return err
+}
+
+const selectLedgerPage = `-- name: SelectLedgerPage :many
+SELECT id, wallet_id, transaction_id, direction, currency, amount_minor,
+    balance_before_minor, balance_after_minor, created_at
+FROM wallet_ledger_entries
+WHERE wallet_id = $1
+  AND (
+      $2::timestamptz IS NULL
+      OR (created_at, id) > ($2::timestamptz, $3::uuid)
+  )
+ORDER BY created_at, id
+LIMIT $4::int
+`
+
+type SelectLedgerPageParams struct {
+	WalletID         uuid.UUID
+	CursorRecordedAt *time.Time
+	CursorEntryID    *uuid.UUID
+	PageSize         int32
+}
+
+func (q *Queries) SelectLedgerPage(ctx context.Context, arg SelectLedgerPageParams) ([]WalletLedgerEntry, error) {
+	rows, err := q.db.Query(ctx, selectLedgerPage,
+		arg.WalletID,
+		arg.CursorRecordedAt,
+		arg.CursorEntryID,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WalletLedgerEntry
+	for rows.Next() {
+		var i WalletLedgerEntry
+		if err := rows.Scan(
+			&i.ID,
+			&i.WalletID,
+			&i.TransactionID,
+			&i.Direction,
+			&i.Currency,
+			&i.AmountMinor,
+			&i.BalanceBeforeMinor,
+			&i.BalanceAfterMinor,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

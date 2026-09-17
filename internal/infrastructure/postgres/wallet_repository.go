@@ -46,6 +46,57 @@ func (r *WalletRepository) Create(ctx context.Context, w *wallet.Wallet) error {
 	return translate(err)
 }
 
+// Find loads the wallet without locking it.
+func (r *WalletRepository) Find(ctx context.Context, id domain.ID) (*wallet.Wallet, error) {
+	q, err := queries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	row, err := q.SelectWallet(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.NotFoundError(domain.FailureCodeWalletNotFound, "wallet %s not found", id)
+	}
+	if err != nil {
+		return nil, translate(err)
+	}
+	return rehydrateWallet(row.ID, row.PlayerID, row.Currency, row.BalanceMinor, row.Version)
+}
+
+// Reconcile reads the stored balance and the one rebuilt from the ledger in a
+// single statement, so both come from the same snapshot.
+func (r *WalletRepository) Reconcile(ctx context.Context, id domain.ID) (usecase.Reconciliation, error) {
+	q, err := queries(ctx)
+	if err != nil {
+		return usecase.Reconciliation{}, err
+	}
+	row, err := q.SelectWalletReconciliation(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return usecase.Reconciliation{}, domain.NotFoundError(domain.FailureCodeWalletNotFound,
+			"wallet %s not found", id)
+	}
+	if err != nil {
+		return usecase.Reconciliation{}, translate(err)
+	}
+
+	currency, err := money.NewCurrency(row.Currency)
+	if err != nil {
+		return usecase.Reconciliation{}, err
+	}
+	stored, err := money.New(row.BalanceMinor, currency)
+	if err != nil {
+		return usecase.Reconciliation{}, err
+	}
+	calculated, err := money.New(row.RebuiltMinor, currency)
+	if err != nil {
+		return usecase.Reconciliation{}, err
+	}
+	return usecase.Reconciliation{
+		Stored:         stored,
+		Calculated:     calculated,
+		CheckedEntries: int(row.CheckedEntries),
+	}, nil
+}
+
 // GetForUpdate loads the wallet with a row lock held until the transaction
 // carried by ctx ends.
 func (r *WalletRepository) GetForUpdate(ctx context.Context, id domain.ID) (*wallet.Wallet, error) {
@@ -62,15 +113,19 @@ func (r *WalletRepository) GetForUpdate(ctx context.Context, id domain.ID) (*wal
 		return nil, translate(err)
 	}
 
-	currency, err := money.NewCurrency(row.Currency)
+	return rehydrateWallet(row.ID, row.PlayerID, row.Currency, row.BalanceMinor, row.Version)
+}
+
+func rehydrateWallet(id, playerID domain.ID, currencyCode string, balanceMinor, version int64) (*wallet.Wallet, error) {
+	currency, err := money.NewCurrency(currencyCode)
 	if err != nil {
 		return nil, err
 	}
-	balance, err := money.New(row.BalanceMinor, currency)
+	balance, err := money.New(balanceMinor, currency)
 	if err != nil {
 		return nil, err
 	}
-	return wallet.Rehydrate(row.ID, row.PlayerID, balance, row.Version)
+	return wallet.Rehydrate(id, playerID, balance, version)
 }
 
 // UpdateBalance stores the balance and version when the stored version still

@@ -9,6 +9,7 @@ import (
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/event"
 	"github.com/davibanfi/betledger/internal/domain/ledger"
+	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
 	"github.com/davibanfi/betledger/internal/usecase"
@@ -125,6 +126,39 @@ func (f fakeWallets) Create(ctx context.Context, w *wallet.Wallet) error {
 	}
 	tx.staged.wallets[w.ID()] = copyWallet(w)
 	return nil
+}
+
+func (f fakeWallets) Find(ctx context.Context, id domain.ID) (*wallet.Wallet, error) {
+	return f.GetForUpdate(ctx, id)
+}
+
+func (f fakeWallets) Reconcile(ctx context.Context, id domain.ID) (usecase.Reconciliation, error) {
+	w, err := f.GetForUpdate(ctx, id)
+	if err != nil {
+		return usecase.Reconciliation{}, err
+	}
+	tx, err := transactionFrom(ctx)
+	if err != nil {
+		return usecase.Reconciliation{}, err
+	}
+
+	rebuilt := int64(0)
+	checked := 0
+	for _, entry := range tx.committed.entries {
+		if entry.WalletID() == id {
+			signed, err := entry.SignedMoney()
+			if err != nil {
+				return usecase.Reconciliation{}, err
+			}
+			rebuilt += signed.MinorUnits()
+			checked++
+		}
+	}
+	calculated, err := money.New(rebuilt, w.Currency())
+	if err != nil {
+		return usecase.Reconciliation{}, err
+	}
+	return usecase.Reconciliation{Stored: w.Balance(), Calculated: calculated, CheckedEntries: checked}, nil
 }
 
 func (f fakeWallets) GetForUpdate(ctx context.Context, id domain.ID) (*wallet.Wallet, error) {
@@ -299,6 +333,28 @@ func (fakeLedger) Append(ctx context.Context, entry *ledger.Entry) error {
 	}
 	tx.staged.entries = append(tx.staged.entries, entry)
 	return nil
+}
+
+func (fakeLedger) Page(
+	ctx context.Context,
+	walletID domain.ID,
+	cursor *usecase.LedgerCursor,
+	limit int,
+) ([]usecase.LedgerEntry, error) {
+	tx, err := transactionFrom(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var page []usecase.LedgerEntry
+	for i, entry := range tx.committed.entries {
+		recordedAt := fixedNow.Add(time.Duration(i) * time.Second)
+		after := cursor == nil || recordedAt.After(cursor.RecordedAt)
+		if entry.WalletID() == walletID && after && len(page) < limit {
+			page = append(page, usecase.LedgerEntry{Entry: entry, RecordedAt: recordedAt})
+		}
+	}
+	return page, nil
 }
 
 type fakeOutbox struct{ err error }

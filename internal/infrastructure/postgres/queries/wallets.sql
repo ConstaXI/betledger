@@ -15,3 +15,19 @@ SET balance_minor = @balance_minor,
     updated_at = now()
 WHERE id = @id
   AND version = @expected_version;
+
+-- name: SelectWallet :one
+SELECT id, player_id, currency, balance_minor, version
+FROM wallets
+WHERE id = @id;
+
+-- name: SelectWalletReconciliation :one
+SELECT w.currency,
+    w.balance_minor,
+    COALESCE(SUM(CASE l.direction WHEN 'CREDIT' THEN l.amount_minor ELSE -l.amount_minor END), 0)::bigint
+        AS rebuilt_minor,
+    count(l.id)::bigint AS checked_entries
+FROM wallets AS w
+LEFT JOIN wallet_ledger_entries AS l ON l.wallet_id = w.id
+WHERE w.id = @id
+GROUP BY w.currency, w.balance_minor;

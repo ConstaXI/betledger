@@ -10,6 +10,7 @@ import (
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/event"
 	"github.com/davibanfi/betledger/internal/domain/ledger"
+	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
 )
@@ -41,6 +42,12 @@ type WalletRepository interface {
 	// FailureCodeWalletAlreadyExists when the player already holds a wallet in
 	// that currency.
 	Create(ctx context.Context, w *wallet.Wallet) error
+	// Find loads the wallet without locking it, for reads. It returns a domain
+	// not-found error carrying FailureCodeWalletNotFound when it does not exist.
+	Find(ctx context.Context, id domain.ID) (*wallet.Wallet, error)
+	// Reconcile reads the stored balance together with the balance rebuilt from
+	// the ledger, in a single consistent view.
+	Reconcile(ctx context.Context, id domain.ID) (Reconciliation, error)
 	// GetForUpdate loads the wallet and locks it until the transaction ends, so
 	// writers of the same wallet run one at a time while other wallets proceed in
 	// parallel. It returns a domain not-found error carrying
@@ -88,11 +95,38 @@ type TransactionRepository interface {
 	UpdatePendingReference(ctx context.Context, transaction *wager.Transaction, nextAttemptAt time.Time) error
 }
 
+// Reconciliation is the stored balance of a wallet beside the one rebuilt from
+// its ledger.
+type Reconciliation struct {
+	Stored     money.Money
+	Calculated money.Money
+	// CheckedEntries is how many ledger entries were summed.
+	CheckedEntries int
+}
+
+// LedgerCursor points at the last entry of a page, so the next page continues
+// right after it. Entries are ordered by when they were recorded and, within
+// the same instant, by identifier.
+type LedgerCursor struct {
+	RecordedAt time.Time
+	EntryID    domain.ID
+}
+
+// LedgerEntry is a stored ledger entry together with when it was recorded,
+// which the domain entity does not carry because no rule depends on it.
+type LedgerEntry struct {
+	Entry      *ledger.Entry
+	RecordedAt time.Time
+}
+
 // LedgerRepository persists the append-only wallet ledger. Writes must run
 // within a transaction.
 type LedgerRepository interface {
 	// Append stores a new ledger entry; existing entries are never changed.
 	Append(ctx context.Context, entry *ledger.Entry) error
+	// Page returns up to limit entries of the wallet, in a stable order,
+	// starting after the cursor when there is one.
+	Page(ctx context.Context, walletID domain.ID, cursor *LedgerCursor, limit int) ([]LedgerEntry, error)
 }
 
 // OutboxRecord is an event recorded in the outbox, as it is published.

@@ -34,6 +34,8 @@ func options() fx.Option {
 			newClock,
 			usecase.NewOpenWallet,
 			usecase.NewProcessWager,
+			usecase.NewReadWallet,
+			usecase.NewReadTransaction,
 			fx.Annotate(auth.NewTokenVerifier, fx.As(new(httpserver.TokenVerifier))),
 			fx.Annotate(newPostgresHealthCheck, fx.ResultTags(`group:"readiness"`)),
 		),

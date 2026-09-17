@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/domaintest"
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/usecase"
@@ -278,6 +279,113 @@ func TestProcessWagerHandler(t *testing.T) {
 			assert.Equal(t, test.wantReplay, body.IdempotentReplay)
 			assert.Equal(t, test.wantCalls, processor.calls)
 			assert.Equal(t, test.wantInput, processor.input)
+		})
+	}
+}
+
+type fakeTransactionReader struct {
+	transaction *wager.Transaction
+	err         error
+	providerID  string
+	externalID  string
+}
+
+func (f *fakeTransactionReader) ByID(
+	_ context.Context,
+	providerID string,
+	_ domain.ID,
+) (*wager.Transaction, error) {
+	f.providerID = providerID
+	return f.transaction, f.err
+}
+
+func (f *fakeTransactionReader) ByExternalID(
+	_ context.Context,
+	providerID, externalTransactionID string,
+) (*wager.Transaction, error) {
+	f.providerID = providerID
+	f.externalID = externalTransactionID
+	return f.transaction, f.err
+}
+
+func TestWageringReadHandlers(t *testing.T) {
+	t.Parallel()
+
+	transaction := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
+	require.NoError(t, transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL")))
+
+	tests := []struct {
+		name           string
+		path           string
+		readerErr      error
+		wantStatus     int
+		wantCode       string
+		wantProviderID string
+		wantExternalID string
+	}{
+		{
+			name:           "should return 200 when the operation is read by its identifier",
+			path:           "/wagering/transactions/" + transaction.ID().String(),
+			wantStatus:     http.StatusOK,
+			wantProviderID: "provider-a",
+		},
+		{
+			name:           "should return 200 when the operation is read by the provider identifier",
+			path:           "/providers/provider-a/wagering/transactions/transaction-123",
+			wantStatus:     http.StatusOK,
+			wantProviderID: "provider-a",
+			wantExternalID: "transaction-123",
+		},
+		{
+			name:           "should return 404 TRANSACTION_NOT_FOUND when the operation is of another provider",
+			path:           "/wagering/transactions/" + transaction.ID().String(),
+			readerErr:      domain.NotFoundError(domain.FailureCodeTransactionNotFound, "not found"),
+			wantStatus:     http.StatusNotFound,
+			wantCode:       "TRANSACTION_NOT_FOUND",
+			wantProviderID: "provider-a",
+		},
+		{
+			name:       "should return 403 FORBIDDEN when the path names another provider",
+			path:       "/providers/provider-b/wagering/transactions/transaction-123",
+			wantStatus: http.StatusForbidden,
+			wantCode:   "FORBIDDEN",
+		},
+		{
+			name:       "should return 400 INVALID_INPUT when the identifier is not a UUID",
+			path:       "/wagering/transactions/transaction-1",
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_INPUT",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := &fakeTransactionReader{transaction: transaction, err: test.readerErr}
+			handler := NewHandler(
+				nil,
+				[]Route{&WageringHandler{readTransaction: reader, logger: slog.New(slog.DiscardHandler)}},
+				nil,
+				fakeTokenVerifier{principal: providerA},
+				slog.New(slog.DiscardHandler),
+			)
+			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			request.Header.Set("Authorization", "Bearer token")
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, request)
+
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+			assert.Equal(t, test.wantStatus, recorder.Code)
+			assert.Equal(t, test.wantCode, body.Error.Code)
+			assert.Equal(t, test.wantProviderID, reader.providerID)
+			assert.Equal(t, test.wantExternalID, reader.externalID)
 		})
 	}
 }

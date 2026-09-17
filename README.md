@@ -24,11 +24,15 @@ O projeto está em construção incremental. O que existe hoje:
   `wallet-events.fifo`, no LocalStack, depois do commit, na ordem de cada carteira.
 - **Consumo por SQS** — as operações também chegam por `wager-transactions.fifo`,
   com inbox por `messageId`, DLQ e o mesmo caso de uso do HTTP.
+- **Consultas e reconciliação** — leitura de carteira, ledger paginado por
+  cursor, consulta de operações isolada por provedor e
+  `POST /wallets/:id/reconciliation`.
 - **Health checks** — liveness em `GET /health/live` e readiness em
   `GET /health/ready` nas duas aplicações: a API checa o banco e os workers
   checam o banco e o SQS.
 
-Ainda **não** existem: as rotas de leitura e a reconciliação. A seção
+Ainda **não** existe a observabilidade da seção 12: métricas e os
+identificadores nos logs. A seção
 [Próximos passos](#próximos-passos) lista a ordem prevista.
 
 ## Pré-requisitos
@@ -347,6 +351,51 @@ docker compose exec localstack awslocal sqs receive-message \
   --max-number-of-messages 10 --attribute-names All
 ```
 
+### Consultas
+
+Todas exigem o papel `wallet-operator`, menos as de operação, que exigem
+`game-provider`:
+
+| Rota | O que devolve |
+| --- | --- |
+| `GET /wallets/:id` | estado atual da carteira |
+| `GET /wallets/:id/ledger?cursor=...&limit=50` | lançamentos do mais antigo ao mais novo |
+| `GET /wagering/transactions/:id` | operação, com estado, saldo observado, `failureCode` e tentativas de referência |
+| `GET /providers/:providerId/wagering/transactions/:externalId` | a mesma operação, pelo identificador do provedor |
+
+O ledger é paginado por **cursor opaco**: a resposta traz `nextCursor` enquanto
+houver mais, e a última página não traz. A ordenação é estável por instante de
+gravação e, no empate, por identificador — então nada se perde nem se repete
+entre páginas.
+
+Um provedor só enxerga as próprias operações. Consultar a operação de outro
+responde `404`, e não `403`, para não revelar que ela existe. Já usar outro
+`providerId` no caminho responde `403`, porque aí o pedido é explícito.
+
+### Reconciliação
+
+```sh
+curl -s -X POST http://localhost:8080/wallets/$WALLET/reconciliation \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
+  "storedBalance": { "amount": "975.00", "currency": "BRL" },
+  "calculatedBalance": { "amount": "975.00", "currency": "BRL" },
+  "difference": { "amount": "0.00", "currency": "BRL" },
+  "consistent": true,
+  "checkedEntries": 2
+}
+```
+
+O saldo é reconstruído somando créditos e subtraindo débitos de todo o ledger,
+inclusive a abertura, e comparado com o saldo armazenado — os dois lidos na mesma
+consulta, para virem do mesmo instante. `difference` é o armazenado menos o
+reconstruído. **A reconciliação nunca corrige nada**: divergência é reportada na
+resposta e registrada no log como erro.
+
 ### Correlação
 
 Toda resposta carrega `X-Correlation-Id`. Se a requisição enviar um valor com
@@ -462,5 +511,4 @@ implementando as portas dos casos de uso.
 
 Na ordem prevista, seguindo [SPECS.md](SPECS.md):
 
-1. Consumidor SQS de `wager-transactions.fifo` com inbox e DLQ (seção 10).
-2. Rotas de leitura, observabilidade e reconciliação (seções 9 e 12).
+1. Observabilidade: métricas e os identificadores nos logs (seção 12).

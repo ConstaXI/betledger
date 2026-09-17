@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/davibanfi/betledger/api"
 	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/domaintest"
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
@@ -36,6 +38,27 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 
 	opened, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(100000, money.MustCurrency("BRL")))
 	require.NoError(t, err)
+	entry, err := opened.OpeningLedgerEntry(domain.NewID())
+	require.NoError(t, err)
+	recordedAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	walletReader := &fakeWalletReader{
+		wallet: opened,
+		page: usecase.LedgerPage{
+			Entries:    []usecase.LedgerEntry{{Entry: entry, RecordedAt: recordedAt}},
+			NextCursor: &usecase.LedgerCursor{RecordedAt: recordedAt, EntryID: entry.ID()},
+		},
+		result: usecase.ReconciliationResult{
+			WalletID:       opened.ID(),
+			Stored:         money.MustNew(100000, money.MustCurrency("BRL")),
+			Calculated:     money.MustNew(100000, money.MustCurrency("BRL")),
+			Difference:     money.MustNew(0, money.MustCurrency("BRL")),
+			Consistent:     true,
+			CheckedEntries: 1,
+		},
+	}
+	processedBet := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
+	require.NoError(t, processedBet.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL")))
+	transactionReader := &fakeTransactionReader{transaction: processedBet}
 
 	const validBody = `{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"1000.00","currency":"BRL"}}`
 	healthy := HealthCheck{Name: "postgres", Check: func(context.Context) error { return nil }}
@@ -239,6 +262,41 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			wantStatus:     http.StatusForbidden,
 		},
 		{
+			name:       "should match the contract when a wallet is read",
+			method:     http.MethodGet,
+			path:       "/wallets/" + opened.ID().String(),
+			verifier:   trusted,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "should match the contract when a page of the ledger is read",
+			method:     http.MethodGet,
+			path:       "/wallets/" + opened.ID().String() + "/ledger?limit=1",
+			verifier:   trusted,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "should match the contract when a wallet is reconciled",
+			method:     http.MethodPost,
+			path:       "/wallets/" + opened.ID().String() + "/reconciliation",
+			verifier:   trusted,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "should match the contract when an operation is read by its identifier",
+			method:     http.MethodGet,
+			path:       "/wagering/transactions/" + processedBet.ID().String(),
+			verifier:   trusted,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "should match the contract when an operation is read by the provider identifier",
+			method:     http.MethodGet,
+			path:       "/providers/provider-a/wagering/transactions/transaction-123",
+			verifier:   trusted,
+			wantStatus: http.StatusOK,
+		},
+		{
 			name:       "should match the contract when the process is alive",
 			method:     http.MethodGet,
 			path:       "/health/live",
@@ -269,8 +327,16 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			handler := NewHandler(
 				nil,
 				[]Route{
-					&WalletHandler{openWallet: opener, logger: slog.New(slog.DiscardHandler)},
-					&WageringHandler{processWager: processor, logger: slog.New(slog.DiscardHandler)},
+					&WalletHandler{
+						openWallet: opener,
+						readWallet: walletReader,
+						logger:     slog.New(slog.DiscardHandler),
+					},
+					&WageringHandler{
+						processWager:    processor,
+						readTransaction: transactionReader,
+						logger:          slog.New(slog.DiscardHandler),
+					},
 				},
 				test.checks,
 				test.verifier,

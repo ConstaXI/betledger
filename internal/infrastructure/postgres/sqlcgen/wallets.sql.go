@@ -35,6 +35,33 @@ func (q *Queries) InsertWallet(ctx context.Context, arg InsertWalletParams) erro
 	return err
 }
 
+const selectWallet = `-- name: SelectWallet :one
+SELECT id, player_id, currency, balance_minor, version
+FROM wallets
+WHERE id = $1
+`
+
+type SelectWalletRow struct {
+	ID           uuid.UUID
+	PlayerID     uuid.UUID
+	Currency     string
+	BalanceMinor int64
+	Version      int64
+}
+
+func (q *Queries) SelectWallet(ctx context.Context, id uuid.UUID) (SelectWalletRow, error) {
+	row := q.db.QueryRow(ctx, selectWallet, id)
+	var i SelectWalletRow
+	err := row.Scan(
+		&i.ID,
+		&i.PlayerID,
+		&i.Currency,
+		&i.BalanceMinor,
+		&i.Version,
+	)
+	return i, err
+}
+
 const selectWalletForUpdate = `-- name: SelectWalletForUpdate :one
 SELECT id, player_id, currency, balance_minor, version
 FROM wallets
@@ -59,6 +86,37 @@ func (q *Queries) SelectWalletForUpdate(ctx context.Context, id uuid.UUID) (Sele
 		&i.Currency,
 		&i.BalanceMinor,
 		&i.Version,
+	)
+	return i, err
+}
+
+const selectWalletReconciliation = `-- name: SelectWalletReconciliation :one
+SELECT w.currency,
+    w.balance_minor,
+    COALESCE(SUM(CASE l.direction WHEN 'CREDIT' THEN l.amount_minor ELSE -l.amount_minor END), 0)::bigint
+        AS rebuilt_minor,
+    count(l.id)::bigint AS checked_entries
+FROM wallets AS w
+LEFT JOIN wallet_ledger_entries AS l ON l.wallet_id = w.id
+WHERE w.id = $1
+GROUP BY w.currency, w.balance_minor
+`
+
+type SelectWalletReconciliationRow struct {
+	Currency       string
+	BalanceMinor   int64
+	RebuiltMinor   int64
+	CheckedEntries int64
+}
+
+func (q *Queries) SelectWalletReconciliation(ctx context.Context, id uuid.UUID) (SelectWalletReconciliationRow, error) {
+	row := q.db.QueryRow(ctx, selectWalletReconciliation, id)
+	var i SelectWalletReconciliationRow
+	err := row.Scan(
+		&i.Currency,
+		&i.BalanceMinor,
+		&i.RebuiltMinor,
+		&i.CheckedEntries,
 	)
 	return i, err
 }

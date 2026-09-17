@@ -21,21 +21,35 @@ type wagerProcessor interface {
 	Execute(ctx context.Context, input usecase.ProcessWagerInput) (usecase.WagerResult, error)
 }
 
+type transactionReader interface {
+	ByID(ctx context.Context, providerID string, transactionID domain.ID) (*wager.Transaction, error)
+	ByExternalID(ctx context.Context, providerID, externalTransactionID string) (*wager.Transaction, error)
+}
+
 // WageringHandler serves the endpoints that receive operations from game
 // providers.
 type WageringHandler struct {
-	processWager wagerProcessor
-	logger       *slog.Logger
+	processWager    wagerProcessor
+	readTransaction transactionReader
+	logger          *slog.Logger
 }
 
 // NewWageringHandler builds the handler.
-func NewWageringHandler(processWager *usecase.ProcessWager, logger *slog.Logger) *WageringHandler {
-	return &WageringHandler{processWager: processWager, logger: logger}
+func NewWageringHandler(
+	processWager *usecase.ProcessWager,
+	readTransaction *usecase.ReadTransaction,
+	logger *slog.Logger,
+) *WageringHandler {
+	return &WageringHandler{processWager: processWager, readTransaction: readTransaction, logger: logger}
 }
 
 // Register mounts the wagering endpoints.
 func (h *WageringHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /wagering/transactions", requireRole(auth.RoleGameProvider, h.handleProcessWager))
+	mux.HandleFunc("GET /wagering/transactions/{transactionId}",
+		requireRole(auth.RoleGameProvider, h.handleGetTransaction))
+	mux.HandleFunc("GET /providers/{providerId}/wagering/transactions/{externalTransactionId}",
+		requireRole(auth.RoleGameProvider, h.handleGetTransactionByExternalID))
 }
 
 type processWagerRequest struct {
@@ -146,6 +160,80 @@ func newWagerResultResponse(result usecase.WagerResult) wagerResultResponse {
 	}
 	if result.State == wager.StateProcessed {
 		response.Balance = &result.Balance
+	}
+	return response
+}
+
+type transactionResponse struct {
+	TransactionID                  string       `json:"transactionId"`
+	ProviderID                     string       `json:"providerId"`
+	ExternalTransactionID          string       `json:"externalTransactionId"`
+	Kind                           wager.Kind   `json:"kind"`
+	Status                         wager.State  `json:"status"`
+	WalletID                       string       `json:"walletId"`
+	PlayerID                       string       `json:"playerId"`
+	RoundID                        string       `json:"roundId"`
+	GameID                         string       `json:"gameId"`
+	Money                          money.Money  `json:"money"`
+	Balance                        *money.Money `json:"balance,omitempty"`
+	FailureCode                    string       `json:"failureCode,omitempty"`
+	ReferenceExternalTransactionID string       `json:"referenceExternalTransactionId,omitempty"`
+	ReferenceAttempts              int          `json:"referenceAttempts"`
+}
+
+func (h *WageringHandler) handleGetTransaction(w http.ResponseWriter, r *http.Request) {
+	transactionID, err := domain.ParseID(r.PathValue("transactionId"))
+	if err != nil {
+		writeError(w, r, h.logger, err)
+		return
+	}
+
+	found, err := h.readTransaction.ByID(r.Context(), principalFrom(r.Context()).ProviderID, transactionID)
+	if err != nil {
+		writeError(w, r, h.logger, err)
+		return
+	}
+	if err := writeJSON(w, http.StatusOK, newTransactionResponse(found)); err != nil {
+		writeError(w, r, h.logger, err)
+	}
+}
+
+func (h *WageringHandler) handleGetTransactionByExternalID(w http.ResponseWriter, r *http.Request) {
+	providerID := principalFrom(r.Context()).ProviderID
+	if providerID == "" || r.PathValue("providerId") != providerID {
+		writeForbidden(w, fmt.Sprintf("the token does not authorize reading operations of provider %q",
+			r.PathValue("providerId")))
+		return
+	}
+
+	found, err := h.readTransaction.ByExternalID(r.Context(), providerID, r.PathValue("externalTransactionId"))
+	if err != nil {
+		writeError(w, r, h.logger, err)
+		return
+	}
+	if err := writeJSON(w, http.StatusOK, newTransactionResponse(found)); err != nil {
+		writeError(w, r, h.logger, err)
+	}
+}
+
+func newTransactionResponse(transaction *wager.Transaction) transactionResponse {
+	response := transactionResponse{
+		TransactionID:                  transaction.ID().String(),
+		ProviderID:                     transaction.ProviderID(),
+		ExternalTransactionID:          transaction.ExternalTransactionID(),
+		Kind:                           transaction.Kind(),
+		Status:                         transaction.State(),
+		WalletID:                       transaction.WalletID().String(),
+		PlayerID:                       transaction.PlayerID().String(),
+		RoundID:                        transaction.RoundID(),
+		GameID:                         transaction.GameID(),
+		Money:                          transaction.Money(),
+		FailureCode:                    string(transaction.FailureCode()),
+		ReferenceExternalTransactionID: transaction.ReferenceExternalTransactionID(),
+		ReferenceAttempts:              transaction.ReferenceAttempts(),
+	}
+	if balance, ok := transaction.ResultBalance(); ok {
+		response.Balance = &balance
 	}
 	return response
 }

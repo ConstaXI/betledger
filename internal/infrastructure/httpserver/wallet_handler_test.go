@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -194,6 +195,156 @@ func TestOpenWalletHandler(t *testing.T) {
 			assert.Equal(t, test.wantCalls, opener.calls)
 			assert.Equal(t, test.wantInput, opener.input)
 			assert.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
+		})
+	}
+}
+
+type fakeWalletReader struct {
+	wallet *wallet.Wallet
+	page   usecase.LedgerPage
+	result usecase.ReconciliationResult
+	err    error
+	cursor *usecase.LedgerCursor
+	limit  int
+}
+
+func (f *fakeWalletReader) Wallet(context.Context, domain.ID) (*wallet.Wallet, error) {
+	return f.wallet, f.err
+}
+
+func (f *fakeWalletReader) Ledger(
+	_ context.Context,
+	_ domain.ID,
+	cursor *usecase.LedgerCursor,
+	limit int,
+) (usecase.LedgerPage, error) {
+	f.cursor = cursor
+	f.limit = limit
+	return f.page, f.err
+}
+
+func (f *fakeWalletReader) Reconcile(context.Context, domain.ID) (usecase.ReconciliationResult, error) {
+	return f.result, f.err
+}
+
+func TestWalletReadHandlers(t *testing.T) {
+	t.Parallel()
+
+	brl := money.MustCurrency("BRL")
+	opened, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(100000, brl))
+	require.NoError(t, err)
+	entry, err := opened.OpeningLedgerEntry(domain.NewID())
+	require.NoError(t, err)
+	recordedAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	cursor := usecase.LedgerCursor{RecordedAt: recordedAt, EntryID: entry.ID()}
+	page := usecase.LedgerPage{
+		Entries:    []usecase.LedgerEntry{{Entry: entry, RecordedAt: recordedAt}},
+		NextCursor: &cursor,
+	}
+	reconciled := usecase.ReconciliationResult{
+		WalletID:       opened.ID(),
+		Stored:         money.MustNew(100000, brl),
+		Calculated:     money.MustNew(100000, brl),
+		Difference:     money.MustNew(0, brl),
+		Consistent:     true,
+		CheckedEntries: 1,
+	}
+
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		readerErr  error
+		wantStatus int
+		wantCode   string
+		wantCursor *usecase.LedgerCursor
+		wantLimit  int
+	}{
+		{
+			name:       "should return 200 when the wallet is read",
+			method:     http.MethodGet,
+			path:       "/wallets/" + opened.ID().String(),
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "should return 404 WALLET_NOT_FOUND when the wallet does not exist",
+			method:     http.MethodGet,
+			path:       "/wallets/" + opened.ID().String(),
+			readerErr:  domain.NotFoundError(domain.FailureCodeWalletNotFound, "wallet not found"),
+			wantStatus: http.StatusNotFound,
+			wantCode:   "WALLET_NOT_FOUND",
+		},
+		{
+			name:       "should return 400 INVALID_INPUT when the wallet id is not a UUID",
+			method:     http.MethodGet,
+			path:       "/wallets/wallet-1",
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_INPUT",
+		},
+		{
+			name:       "should return 200 when the first page of the ledger is read",
+			method:     http.MethodGet,
+			path:       "/wallets/" + opened.ID().String() + "/ledger",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "should accept when the page carries a cursor and a limit",
+			method:     http.MethodGet,
+			path:       "/wallets/" + opened.ID().String() + "/ledger?limit=10&cursor=" + encodeLedgerCursor(cursor),
+			wantStatus: http.StatusOK,
+			wantCursor: &cursor,
+			wantLimit:  10,
+		},
+		{
+			name:       "should return 400 INVALID_INPUT when the cursor is not opaque data of ours",
+			method:     http.MethodGet,
+			path:       "/wallets/" + opened.ID().String() + "/ledger?cursor=not-a-cursor",
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_INPUT",
+		},
+		{
+			name:       "should return 400 INVALID_INPUT when the limit is not a number",
+			method:     http.MethodGet,
+			path:       "/wallets/" + opened.ID().String() + "/ledger?limit=all",
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_INPUT",
+		},
+		{
+			name:       "should return 200 when the wallet is reconciled",
+			method:     http.MethodPost,
+			path:       "/wallets/" + opened.ID().String() + "/reconciliation",
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := &fakeWalletReader{wallet: opened, page: page, result: reconciled, err: test.readerErr}
+			handler := NewHandler(
+				nil,
+				[]Route{&WalletHandler{readWallet: reader, logger: slog.New(slog.DiscardHandler)}},
+				nil,
+				fakeTokenVerifier{principal: walletOperator},
+				slog.New(slog.DiscardHandler),
+			)
+			request := httptest.NewRequest(test.method, test.path, nil)
+			request.Header.Set("Authorization", "Bearer token")
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, request)
+
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+			assert.Equal(t, test.wantStatus, recorder.Code)
+			assert.Equal(t, test.wantCode, body.Error.Code)
+			assert.Equal(t, test.wantCursor, reader.cursor)
+			assert.Equal(t, test.wantLimit, reader.limit)
 		})
 	}
 }

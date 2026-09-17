@@ -409,3 +409,13 @@ func (p *Postgres) InboxMessages(t *testing.T) int {
 		"SELECT count(*) FROM inbox_messages").Scan(&count))
 	return count
 }
+
+// DivergeWalletBalance moves the stored balance without touching the ledger, so
+// that a reconciliation has something to find.
+func (p *Postgres) DivergeWalletBalance(t *testing.T, walletID domain.ID, minorUnits int64) {
+	t.Helper()
+
+	_, err := p.Pool.Exec(context.Background(),
+		"UPDATE wallets SET balance_minor = balance_minor + $2 WHERE id = $1", walletID, minorUnits)
+	require.NoError(t, err)
+}

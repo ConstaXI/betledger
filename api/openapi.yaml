@@ -273,6 +273,217 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /wallets/{walletId}:
+    get:
+      tags: [Wallets]
+      operationId: getWallet
+      summary: Read a wallet
+      description: Returns the current state of the wallet. Requires the `wallet-operator` role.
+      parameters:
+        - $ref: '#/components/parameters/WalletId'
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: The wallet.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Wallet'
+        '400':
+          $ref: '#/components/responses/InvalidInput'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/WalletNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /wallets/{walletId}/ledger:
+    get:
+      tags: [Wallets]
+      operationId: getWalletLedger
+      summary: Read the wallet ledger
+      description: |
+        Returns the ledger entries of the wallet, oldest first, in a stable
+        order. Paging uses an opaque cursor: send back the `nextCursor` of a page
+        to read the next one. The last page carries no `nextCursor`. Requires the
+        `wallet-operator` role.
+      parameters:
+        - $ref: '#/components/parameters/WalletId'
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: How many entries to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: A page of the ledger.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerPage'
+        '400':
+          $ref: '#/components/responses/InvalidInput'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/WalletNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /wallets/{walletId}/reconciliation:
+    post:
+      tags: [Wallets]
+      operationId: reconcileWallet
+      summary: Reconcile a wallet against its ledger
+      description: |
+        Rebuilds the balance from every ledger entry of the wallet, including the
+        opening, and compares it with the stored balance, both read in a single
+        consistent view. `difference` is the stored balance minus the rebuilt
+        one. Reconciling never changes a balance: a divergence is reported here
+        and logged, not corrected. Requires the `wallet-operator` role.
+      parameters:
+        - $ref: '#/components/parameters/WalletId'
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: The comparison between the stored balance and the rebuilt one.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reconciliation'
+              example:
+                walletId: 0192f291-27dd-7d3f-8071-5f8685deef37
+                storedBalance: { amount: '975.00', currency: BRL }
+                calculatedBalance: { amount: '975.00', currency: BRL }
+                difference: { amount: '0.00', currency: BRL }
+                consistent: true
+                checkedEntries: 2
+        '400':
+          $ref: '#/components/responses/InvalidInput'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/WalletNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /wagering/transactions/{transactionId}:
+    get:
+      tags: [Wagering]
+      operationId: getWagerTransaction
+      summary: Read an operation
+      description: |
+        Returns the operation, with its state, the balance observed when it was
+        processed, the failure code of a refusal and how many attempts a pending
+        reference already had. Requires the `game-provider` role; an operation of
+        another provider answers `404`, so that a provider cannot learn that it
+        exists.
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: The operation.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WagerTransaction'
+        '400':
+          $ref: '#/components/responses/InvalidInput'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TransactionNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /providers/{providerId}/wagering/transactions/{externalTransactionId}:
+    get:
+      tags: [Wagering]
+      operationId: getWagerTransactionByExternalId
+      summary: Read an operation by the provider identifier
+      description: |
+        Returns the operation the provider identified with
+        `externalTransactionId`. The `providerId` in the path must be the one in
+        the token; another provider answers `403`.
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: externalTransactionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: The operation.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WagerTransaction'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TransactionNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /health/live:
     get:
       tags: [Health]
@@ -335,6 +546,13 @@ components:
         ```
 
   parameters:
+    WalletId:
+      name: walletId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     CorrelationId:
       name: X-Correlation-Id
       in: header
@@ -404,6 +622,32 @@ components:
             error:
               code: UNAUTHENTICATED
               message: a bearer token is required
+    WalletNotFound:
+      description: The wallet does not exist.
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/CorrelationId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: WALLET_NOT_FOUND
+              message: wallet 0192f291-27dd-7d3f-8071-5f8685deef37 not found
+    TransactionNotFound:
+      description: The operation does not exist, or belongs to another provider.
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/CorrelationId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: TRANSACTION_NOT_FOUND
+              message: operation "transaction-123" not found for provider provider-a
     Forbidden:
       description: |
         The caller is authenticated but lacks the role for the endpoint, or the
@@ -571,6 +815,109 @@ components:
         idempotentReplay:
           type: boolean
           description: True when the result was already persisted and nothing was applied again.
+
+    LedgerEntry:
+      type: object
+      required: [id, transactionId, direction, money, balanceBefore, balanceAfter, recordedAt]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        transactionId:
+          type: string
+          format: uuid
+        direction:
+          type: string
+          enum: [DEBIT, CREDIT]
+        money:
+          $ref: '#/components/schemas/Money'
+        balanceBefore:
+          $ref: '#/components/schemas/Money'
+        balanceAfter:
+          $ref: '#/components/schemas/Money'
+        recordedAt:
+          type: string
+          format: date-time
+
+    LedgerPage:
+      type: object
+      required: [entries]
+      additionalProperties: false
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/LedgerEntry'
+        nextCursor:
+          type: string
+          description: Opaque cursor of the next page; absent on the last one.
+
+    Reconciliation:
+      type: object
+      required: [walletId, storedBalance, calculatedBalance, difference, consistent, checkedEntries]
+      additionalProperties: false
+      properties:
+        walletId:
+          type: string
+          format: uuid
+        storedBalance:
+          $ref: '#/components/schemas/Money'
+        calculatedBalance:
+          $ref: '#/components/schemas/Money'
+        difference:
+          $ref: '#/components/schemas/Money'
+          description: The stored balance minus the rebuilt one.
+        consistent:
+          type: boolean
+        checkedEntries:
+          type: integer
+          minimum: 0
+
+    WagerTransaction:
+      type: object
+      required:
+        [transactionId, providerId, externalTransactionId, kind, status, walletId, playerId, roundId, gameId,
+         money, referenceAttempts]
+      additionalProperties: false
+      properties:
+        transactionId:
+          type: string
+          format: uuid
+        providerId:
+          type: string
+        externalTransactionId:
+          type: string
+        kind:
+          type: string
+          enum: [BET, WIN, LOSS, REFUND, ROLLBACK]
+        status:
+          type: string
+          enum: [PENDING, PENDING_REFERENCE, PROCESSED, REJECTED, FAILED]
+        walletId:
+          type: string
+          format: uuid
+        playerId:
+          type: string
+          format: uuid
+        roundId:
+          type: string
+        gameId:
+          type: string
+        money:
+          $ref: '#/components/schemas/Money'
+        balance:
+          $ref: '#/components/schemas/Money'
+          description: Balance observed when the operation was processed; absent otherwise.
+        failureCode:
+          type: string
+          description: Why the operation was refused; absent otherwise.
+        referenceExternalTransactionId:
+          type: string
+        referenceAttempts:
+          type: integer
+          minimum: 0
+          description: Attempts that found no concluded reference.
 
     Error:
       type: object

@@ -305,6 +305,26 @@ dados, e não de checagens espalhadas: a chave de idempotência e o
 `externalTransactionId` já são únicos por provedor, então um provedor nunca
 encontra, reaproveita nem reenvia uma operação de outro.
 
+## Consultas e reconciliação
+
+**Implementado.** As leituras passam pelos mesmos repositórios das escritas,
+dentro de uma transação, e não reaproveitam o caminho que trava a carteira: ler
+não bloqueia quem está apostando.
+
+- **Paginação por cursor.** O ledger é ordenado por `(created_at, id)`, e o
+  cursor carrega esse par codificado em Base64. É opaco de propósito: o cliente
+  devolve o que recebeu, e a ordenação pode mudar sem quebrar ninguém. O caso de
+  uso lê um item além da página para saber se existe próxima, em vez de contar o
+  total.
+- **Isolamento nas consultas.** Um provedor só lê as próprias operações. Operação
+  de outro provedor responde `404`, não `403`, porque `403` confirmaria que o
+  identificador existe.
+- **Reconciliação numa consulta só.** O saldo armazenado e o reconstruído pelo
+  ledger vêm do mesmo `SELECT`, então não há janela entre as duas leituras. A
+  reconciliação **não corrige** nada: ela reporta `difference` e `consistent`, e
+  registra divergência no log como erro. Corrigir exigiria novo lançamento no
+  ledger, que é append-only, e essa decisão é do operador.
+
 ## Composição e shutdown
 
 **Implementado.** São **duas aplicações** a partir do mesmo módulo: `cmd/api`
