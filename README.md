@@ -12,11 +12,14 @@ O projeto está em construção incremental. O que existe hoje:
   `WalletLedgerEntry` e os eventos de integração.
 - **Abertura de carteira de ponta a ponta** — `POST /wallets`, use case,
   PostgreSQL com migrations e outbox transacional.
+- **Apostas `BET`, `WIN` e `LOSS`** — `POST /wagering/transactions`, com
+  idempotência persistente e lock por carteira.
 - **Health checks** — liveness em `GET /health/live` e readiness, que checa o
   banco, em `GET /health/ready`.
 
-Ainda **não** existem: autenticação, as operações de aposta, idempotência, SQS, o
-worker que publica a outbox e a aplicação em container. A seção
+Ainda **não** existem: autenticação, reversões (`REFUND`, `ROLLBACK`) e `WIN`
+com referência, as rotas de leitura, SQS, o worker que publica a outbox e a
+aplicação em container. A seção
 [Próximos passos](#próximos-passos) lista a ordem prevista.
 
 ## Pré-requisitos
@@ -123,6 +126,46 @@ Com saldo positivo, a abertura grava no mesmo commit a carteira, a transação
 O `amount` é sempre uma string decimal com até duas casas; números JSON são
 recusados, para que o valor nunca passe por ponto flutuante.
 
+### Enviar operação
+
+```sh
+curl -i -X POST http://localhost:8080/wagering/transactions \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: provider-a:transaction-123' \
+  -d '{
+    "providerId": "provider-a",
+    "externalTransactionId": "transaction-123",
+    "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
+    "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
+    "roundId": "round-987",
+    "gameId": "fortune-chimp",
+    "kind": "BET",
+    "money": { "amount": "25.00", "currency": "BRL" }
+  }'
+```
+
+```http
+HTTP/1.1 201 Created
+
+{
+  "transactionId": "0192f298-345e-7e38-af88-e43f851a819d",
+  "status": "PROCESSED",
+  "balance": { "amount": "975.00", "currency": "BRL" },
+  "idempotentReplay": false
+}
+```
+
+`BET` debita, `WIN` credita e `LOSS`, sempre com valor `"0.00"`, só registra o
+desfecho da rodada. O header `Idempotency-Key` é obrigatório.
+
+| Status | Quando |
+| --- | --- |
+| `201` | Operação aplicada agora |
+| `200` | Replay de operação já aplicada, com `idempotentReplay: true` e o saldo original |
+| `422` | Recusa de negócio, gravada como `REJECTED`, com `failureCode` no corpo do resultado; o replay responde igual |
+| `409` | `IDEMPOTENCY_CONFLICT`: chave reutilizada com outro corpo, ou operação reenviada com outra chave |
+| `404` | `WALLET_NOT_FOUND` |
+
 ### Correlação
 
 Toda resposta carrega `X-Correlation-Id`. Se a requisição enviar um valor com
@@ -139,9 +182,9 @@ Erros seguem sempre o mesmo formato:
 
 | Status | Quando | Exemplos de `code` |
 | --- | --- | --- |
-| `400` | Entrada inválida; corrigir e reenviar | `INVALID_INPUT`, `INVALID_AMOUNT` |
+| `400` | Entrada inválida; corrigir e reenviar | `INVALID_INPUT`, `INVALID_AMOUNT`, `TRANSACTION_KIND_NOT_ALLOWED` |
 | `404` | Recurso inexistente | `WALLET_NOT_FOUND` |
-| `409` | Conflito com estado já persistido | `WALLET_ALREADY_EXISTS` |
+| `409` | Conflito com estado já persistido | `WALLET_ALREADY_EXISTS`, `IDEMPOTENCY_CONFLICT` |
 | `422` | Recusa definitiva por regra de negócio | `INSUFFICIENT_FUNDS` |
 | `503` | Indisponibilidade transitória; pode ser repetido | `SERVICE_UNAVAILABLE` |
 | `500` | Erro inesperado | `INTERNAL_ERROR` |
@@ -216,7 +259,7 @@ Na ordem prevista, seguindo [SPECS.md](SPECS.md):
 1. Autenticação com Keycloak e restrição das operações de carteira ao serviço
    interno (seção 2).
 2. Aplicação em container, para rodar tudo com `docker compose up --build`.
-3. Operações de aposta com idempotência persistente e concorrência por carteira
-   (seções 5, 7, 8 e 9).
+3. Reversões e `WIN` com referência, com resolução de referências pendentes
+   (seções 5 e 8).
 4. SQS com inbox e o worker de publicação da outbox (seções 10 e 11).
-5. Observabilidade e reconciliação (seções 9 e 12).
+5. Rotas de leitura, observabilidade e reconciliação (seções 9 e 12).

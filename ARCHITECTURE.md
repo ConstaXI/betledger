@@ -99,11 +99,29 @@ advisory lock que torna seguras as execuções simultâneas.
 
 ## Concorrência
 
-**Parcialmente decidido.** A coordenação é por carteira, nunca global. `Wallet`
-carrega uma versão incrementada a cada mudança de saldo, base para impedir lost
-updates. A escolha entre lock pessimista e controle otimista será feita junto com
-o use case de apostas, o primeiro com escritores concorrentes sobre a mesma
-carteira.
+**Implementado.** A coordenação é por carteira, nunca global. Cada operação
+carrega a carteira com `SELECT ... FOR UPDATE`, que serializa as operações da
+mesma carteira sem bloquear as demais, e grava o saldo com
+`UPDATE ... WHERE version = <versão lida>`, que falha em vez de sobrescrever se a
+versão mudou. As duas defesas são redundantes de propósito: o lock é o mecanismo,
+a versão é a garantia contra lost update caso ele deixe de ser tomado.
+
+Os cenários da spec — duas apostas de 80.00 sobre 100.00 e a mesma aposta enviada
+50 vezes — rodam em paralelo contra o PostgreSQL real, em várias rodadas.
+
+## Idempotência
+
+**Implementado.** A chave é única por provedor no banco, e a operação guarda um
+hash SHA-256 do JSON canônico dos campos de negócio, sem a chave e sem metadados
+de transporte. Mesma chave e mesmo hash devolvem o resultado persistido; mesma
+chave com hash diferente, ou a mesma `(providerId, externalTransactionId)` sob
+outra chave, é conflito. A consulta acontece depois do lock da carteira, então
+duas cópias simultâneas não passam ambas pela checagem.
+
+Recusas de negócio são **gravadas** como `REJECTED`, com o evento
+`WagerTransactionRejected`, em vez de desfazer a transação. Assim o replay de uma
+recusa devolve a mesma recusa, e não uma nova tentativa que poderia ser aceita
+depois de um crédito.
 
 ## Referências pendentes
 
@@ -129,6 +147,11 @@ Assim o cliente distingue, só pelo contrato, o que deve corrigir, o que pode
 repetir e o que é definitivo. Falhas internas são registradas no log, mas seus
 detalhes nunca chegam ao cliente.
 
+Em `POST /wagering/transactions`, o status separa os desfechos: `201` para
+operação aplicada agora, `200` para replay de uma aplicada, e `422` para
+`REJECTED` — nova ou replay —, com o corpo do resultado em vez do corpo de erro,
+já que a recusa é um estado persistido com `transactionId`.
+
 Cada requisição tem um prazo de 5 segundos, abaixo do `WriteTimeout` do servidor.
 Sem ele, uma requisição feita com o banco travado ficava pendurada
 indefinidamente; com ele, o prazo expirado aborta a operação pendente e a
@@ -137,7 +160,10 @@ resposta é `503`, que o cliente pode repetir com segurança graças à idempot�
 ## Interpretações adotadas
 
 - `WIN` aceita referência opcional a uma aposta da mesma rodada; `BET` e `LOSS`
-  não aceitam referência.
+  não aceitam referência. Por ora, `WIN` com referência é recusado com
+  `TRANSACTION_KIND_NOT_ALLOWED`, até existir a resolução de referências.
+- `LOSS` tem valor zero e só registra o desfecho da rodada: não gera lançamento,
+  não muda a versão da carteira e emite apenas `WagerTransactionProcessed`.
 - Saldo inicial zero não cria `OPENING`, lançamento nem eventos, e a carteira
   nasce com versão 1.
 - A moeda é validada pelo formato ISO 4217, não contra uma lista fechada.
@@ -145,8 +171,6 @@ resposta é `503`, que o cliente pode repetir com segurança graças à idempot�
 ## Trabalho não concluído
 
 - **Autenticação e autorização** com Keycloak e isolamento por provedor.
-- **Operações de aposta**, com idempotência persistente e reprodução do resultado
-  original.
 - **Reversões** contra o estado persistido, incluindo a política que impede
   `REFUND` e `ROLLBACK` sobre o mesmo débito.
 - **Publicação da outbox** e **inbox**, com SQS em filas FIFO e DLQ.
