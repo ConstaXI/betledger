@@ -21,9 +21,10 @@ O `make` do usuário tem alias para `make -j24`; o Makefile declara
 Nunca edite `internal/infrastructure/postgres/sqlcgen` à mão: é gerado.
 
 São duas aplicações: `cmd/api` (HTTP) e `cmd/workers` (referências pendentes e
-publicação da outbox), compostas por `app.API()` e `app.Workers()`. O que as duas
-precisam fica no `shared()`, não exportado. Worker novo entra no `worker.Module`,
-nunca na API.
+publicação da outbox). Cada `main` monta o próprio grafo do Fx, **sem pacote de
+composição compartilhado**: provedor usado pelas duas é duplicado de propósito,
+então ao mexer num deles confira se o outro precisa do mesmo. Worker novo entra
+no `worker.Module`, nunca na API.
 
 Rotas registradas no grupo Fx `routes` exigem token; só `public_routes` e os
 health checks são públicos. Não registre rota de negócio como pública. Toda rota
@@ -107,7 +108,7 @@ avulso só quando o cenário realmente não cabe, e explique por quê.
 
 **Testes de integração** ficam em `test/integration`, e os arquivos de lá contêm
 **apenas testes** (mais o `TestMain`). Toda a infraestrutura — subir containers,
-iniciar a API e os workers por `app.API()` e `app.Workers()`, chamadas HTTP,
+iniciar a API e os workers como processos dos binários compilados, chamadas HTTP,
 consultas ao banco — vive
 em `test/testenv`. Ambos ficam atrás da build tag `integration`; como o
 `goimports` não enxerga o `testenv` sem a tag, confira os imports à mão. Testes

@@ -13,7 +13,6 @@ import (
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
-	"github.com/davibanfi/betledger/internal/infrastructure/config"
 	"github.com/davibanfi/betledger/internal/usecase"
 	"github.com/davibanfi/betledger/test/testenv"
 )
@@ -21,10 +20,9 @@ import (
 func TestApplicationAuthorizesWalletOpening(t *testing.T) {
 	t.Parallel()
 
-	application := testenv.StartApplication(t, database.URL, identityProvider, broker)
-	anotherAudience := testenv.StartApplication(t, database.URL, identityProvider, broker, func(cfg *config.Config) {
-		cfg.OIDCAudience = "another-api"
-	})
+	application := binary.StartAPI(t, database.URL, identityProvider, broker)
+	anotherAudience := binary.StartAPI(t, database.URL, identityProvider, broker,
+		testenv.WithEnv("OIDC_AUDIENCE", "another-api"))
 	walletServiceToken := strings.Split(identityProvider.Token(t, "wallet-service"), ".")
 	providerToken := strings.Split(identityProvider.Token(t, "provider-a"), ".")
 	forged := walletServiceToken[0] + "." + walletServiceToken[1] + "." + providerToken[2]
@@ -86,7 +84,7 @@ func TestApplicationAuthorizesWalletOpening(t *testing.T) {
 func TestApplicationAuthorizesOperations(t *testing.T) {
 	t.Parallel()
 
-	application := testenv.StartApplication(t, database.URL, identityProvider, broker)
+	application := binary.StartAPI(t, database.URL, identityProvider, broker)
 	fromProvider := func(providerID string) func(w *wallet.Wallet) usecase.ProcessWagerInput {
 		return func(w *wallet.Wallet) usecase.ProcessWagerInput {
 			input := testenv.BetInput(w, "shared-identifiers", 2500)

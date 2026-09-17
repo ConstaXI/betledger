@@ -16,7 +16,6 @@ import (
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
-	"github.com/davibanfi/betledger/internal/infrastructure/config"
 	"github.com/davibanfi/betledger/internal/usecase"
 	"github.com/davibanfi/betledger/test/testenv"
 )
@@ -150,11 +149,10 @@ func TestWorkersPublishEventsCommittedByTheAPI(t *testing.T) {
 	useCases := isolated.NewUseCases()
 	queueName, queueURL := broker.CreateEventsQueue(t)
 	w := useCases.MustOpenWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
-	application := testenv.StartApplication(t, isolated.URL, identityProvider, broker)
-	testenv.StartWorkers(t, isolated.URL, broker, func(cfg *config.Config) {
-		cfg.EventsQueueName = queueName
-		cfg.OutboxPollInterval = 50 * time.Millisecond
-	})
+	application := binary.StartAPI(t, isolated.URL, identityProvider, broker)
+	binary.StartWorkers(t, isolated.URL, broker,
+		testenv.WithEnv("EVENTS_QUEUE_NAME", queueName),
+		testenv.WithEnv("OUTBOX_POLL_INTERVAL", "50ms"))
 
 	status, _ := application.SendWager(t, testenv.BetInput(w, "bet", 2500))
 	received := broker.ReceiveEvents(t, queueURL, 4, 15*time.Second)

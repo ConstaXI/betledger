@@ -15,7 +15,6 @@ import (
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
-	"github.com/davibanfi/betledger/internal/infrastructure/config"
 	"github.com/davibanfi/betledger/internal/usecase"
 	"github.com/davibanfi/betledger/test/testenv"
 )
@@ -207,16 +206,14 @@ func TestApplicationResolvesPendingReferencesAfterRestart(t *testing.T) {
 	useCases := isolated.NewUseCases()
 	w := useCases.MustOpenWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
 
-	first := testenv.StartApplication(t, isolated.URL, identityProvider, broker)
+	first := binary.StartAPI(t, isolated.URL, identityProvider, broker)
 	status, _ := first.SendWager(t, testenv.ReferringInput(w, wager.KindRefund, "refund", "bet", 2500))
 	require.Equal(t, http.StatusAccepted, status)
 	first.Stop(t)
 
 	_, err := useCases.ProcessWager.Execute(context.Background(), testenv.BetInput(w, "bet", 2500))
 	require.NoError(t, err)
-	testenv.StartWorkers(t, isolated.URL, broker, func(cfg *config.Config) {
-		cfg.ReferencePollInterval = 50 * time.Millisecond
-	})
+	binary.StartWorkers(t, isolated.URL, broker, testenv.WithEnv("REFERENCE_POLL_INTERVAL", "50ms"))
 
 	assert.Eventually(t, func() bool { return isolated.Operation(t, w, "refund").State == "PROCESSED" },
 		10*time.Second, 100*time.Millisecond, "the workers started afterwards must resolve the refund")

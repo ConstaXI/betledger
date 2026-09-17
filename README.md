@@ -341,9 +341,10 @@ compartilhado e sem precisar do `make infra-up`. Cobrem estes níveis:
   atacando as tabelas diretamente com SQL — e os cenários de concorrência da
   spec, como duas apostas de 80.00 sobre 100.00 e a mesma aposta enviada 50 vezes
   em paralelo.
-- **Várias instâncias**: o binário da aplicação é compilado uma vez e executado
-  como três processos independentes, cada um com sua memória e seu pool de
-  conexões, contra o mesmo banco. As duas apostas de 80.00 chegam a instâncias
+- **Várias instâncias**: os binários são compilados uma vez, e toda aplicação nos
+  testes roda como processo, igual à produção. A API sobe como três processos
+  independentes, cada um com sua memória e seu pool de conexões, contra o mesmo
+  banco. As duas apostas de 80.00 chegam a instâncias
   diferentes, os reenvios vão para a terceira, e a mesma aposta é enviada 50
   vezes distribuída entre as três.
 - **Publicação e retomada**: publisher e worker de referências contra PostgreSQL
@@ -373,12 +374,11 @@ go test -tags=integration -run 'TestSchemaEnforcesFinancialInvariants' ./test/in
 ```
 api/                                 contrato HTTP em OpenAPI e página do Swagger UI
 Dockerfile                           imagem multi-stage com a aplicação e o binário de migrations
-cmd/api/                             entrypoint da API HTTP
-cmd/workers/                         entrypoint dos workers em segundo plano
+cmd/api/                             API HTTP: entrypoint e composição via Fx
+cmd/workers/                         workers em segundo plano: entrypoint e composição via Fx
 cmd/migrate/                         aplicação e reversão das migrations
 deploy/keycloak/                     realm importado pelo Keycloak no Compose e nos testes
 deploy/localstack/                   provisionamento das filas no Compose e nos testes
-internal/app/                        composição das duas aplicações via Fx
 internal/domain/                     erros e identificadores compartilhados
 internal/domain/money/               valor monetário exato, sem ponto flutuante
 internal/domain/ledger/              lançamentos do ledger append-only

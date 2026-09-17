@@ -277,8 +277,11 @@ encontra, reaproveita nem reenvia uma operação de outro.
 
 **Implementado.** São **duas aplicações** a partir do mesmo módulo: `cmd/api`
 serve o HTTP e `cmd/workers` roda a retomada de referências e a publicação da
-outbox. O `internal/app` expõe `API()` e `Workers()`, que compartilham por dentro
-a configuração, o banco, o SQS e os casos de uso.
+outbox. Cada uma monta o próprio grafo do Fx no seu `main`, sem um pacote de
+composição compartilhado: os provedores que as duas usam aparecem nos dois
+arquivos. A duplicação é deliberada — cada aplicação se lê inteira num arquivo só
+e pode mudar sem arrastar a outra —, e o custo é lembrar de aplicar nos dois um
+ajuste que valha para ambos.
 
 A separação existe porque as duas escalam por motivos diferentes: a API é curta e
 sensível a latência, os workers são longos e sensíveis a throughput e a disputa
@@ -287,8 +290,10 @@ interrompe uma rodada de trabalho no meio. Como toda a coordenação vive no ban
 subir mais de um processo de workers é seguro. Os workers não expõem HTTP: sua
 saúde é o processo estar vivo, e uma dependência inacessível impede a subida.
 
-A aplicação é composta com Uber Fx, e servidor e recursos são
-gerenciados por `fx.Lifecycle`. A inicialização valida a configuração, consulta o
+As duas são compostas com Uber Fx, e servidor, workers e recursos são
+gerenciados por `fx.Lifecycle`. Cada entrypoint tem um teste que valida seu grafo
+de dependências sem precisar de infraestrutura, e os testes de integração sobem
+os binários compilados como processos, do mesmo jeito que rodam em produção. A inicialização valida a configuração, consulta o
 banco e só então abre o listener, para que uma falha impeça a subida em vez de
 ocorrer em segundo plano. O encerramento segue a ordem inversa: o servidor para
 de aceitar conexões e conclui as em andamento, os workers de referências
