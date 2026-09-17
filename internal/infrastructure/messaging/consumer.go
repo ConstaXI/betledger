@@ -47,9 +47,14 @@ type wagerMessage struct {
 // through the same use case the HTTP endpoint uses, so both entries share the
 // financial idempotency. A message is deleted only after its handling is
 // committed, so an interruption in between brings the message back.
+// messageProcessor applies an operation received from the queue.
+type messageProcessor interface {
+	Execute(ctx context.Context, message usecase.InboundMessage) (usecase.InboundResult, error)
+}
+
 type WagerConsumer struct {
-	client            *sqs.Client
-	processMessage    *usecase.ProcessInboxMessage
+	client            queueAPI
+	processMessage    messageProcessor
 	logger            *slog.Logger
 	queueName         string
 	deadLetterName    string

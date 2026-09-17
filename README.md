@@ -444,7 +444,7 @@ internal/usecase/                    casos de uso e as portas que eles consomem
 internal/infrastructure/auth/        validação dos access tokens do Keycloak
 internal/infrastructure/config/      carga e validação da configuração de ambiente
 internal/infrastructure/httpserver/  handlers, middleware e ciclo de vida do servidor
-internal/infrastructure/messaging/   cliente SQS e publicação dos eventos
+internal/infrastructure/messaging/   cliente SQS, publicação dos eventos e consumo das operações
 internal/infrastructure/postgres/    repositórios, migrations e queries do sqlc
 internal/infrastructure/worker/      workers em segundo plano: retomada de referências e publicação da outbox
 test/integration/                    testes de integração, só os testes

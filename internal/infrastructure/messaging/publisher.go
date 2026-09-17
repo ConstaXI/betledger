@@ -29,12 +29,29 @@ func NewClient(cfg config.Config) (*sqs.Client, error) {
 	}), nil
 }
 
+// queueAPI is the part of the SQS client the publisher and the consumer use.
+type queueAPI interface {
+	GetQueueUrl(context.Context, *sqs.GetQueueUrlInput, ...func(*sqs.Options)) (*sqs.GetQueueUrlOutput, error)
+	GetQueueAttributes(
+		context.Context,
+		*sqs.GetQueueAttributesInput,
+		...func(*sqs.Options),
+	) (*sqs.GetQueueAttributesOutput, error)
+	SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
+	ReceiveMessage(
+		context.Context,
+		*sqs.ReceiveMessageInput,
+		...func(*sqs.Options),
+	) (*sqs.ReceiveMessageOutput, error)
+	DeleteMessage(context.Context, *sqs.DeleteMessageInput, ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
+}
+
 // EventPublisher publishes outbox events to the events FIFO queue. The message
 // body is the event snapshot as recorded; the group is the aggregate, so events
 // of a wallet are consumed in order, and the deduplication id is the event id,
 // so a republication within the deduplication window is dropped by the queue.
 type EventPublisher struct {
-	client    *sqs.Client
+	client    queueAPI
 	queueName string
 	queueURL  string
 }
