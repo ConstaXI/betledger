@@ -108,11 +108,25 @@ paths:
       operationId: processWager
       summary: Send an operation from a game provider
       description: |
-        Applies a `BET`, `WIN` or `LOSS` to the wallet. A `BET` debits, a `WIN`
-        credits and a `LOSS`, whose amount must be zero, records the round
-        without moving the balance. A `WIN` with `referenceExternalTransactionId`
-        and the reversals `REFUND` and `ROLLBACK` are not supported yet and answer
-        `400 TRANSACTION_KIND_NOT_ALLOWED`.
+        Applies an operation to the wallet:
+
+        | Kind | Movement | Reference |
+        | --- | --- | --- |
+        | `BET` | debit | none |
+        | `WIN` | credit | optional, a `BET` of the same round |
+        | `LOSS` | none; amount must be `0.00` | none |
+        | `REFUND` | credit | required, a `BET` |
+        | `ROLLBACK` | opposite of the reference | required, a `BET`, `WIN` or `REFUND` |
+
+        The reference is found by `(providerId, referenceExternalTransactionId)`
+        and must be `PROCESSED`, belong to the same player, wallet, currency and
+        round, and, for a reversal, carry the same amount. An operation is
+        reversed at most once: a `BET` accepts one `REFUND` or one `ROLLBACK`,
+        never both. Disagreements are business refusals, answered with `422`.
+
+        When the reference has not arrived yet, or is itself still pending, the
+        operation is recorded as `PENDING_REFERENCE`, moves no money and is
+        answered with `202`.
 
         Requires the `game-provider` role, and `providerId` must match the
         `provider_id` claim of the token; otherwise the answer is `403`.
@@ -168,6 +182,21 @@ paths:
                 balance:
                   amount: '975.00'
                   currency: BRL
+                idempotentReplay: false
+        '202':
+          description: |
+            The operation was recorded as `PENDING_REFERENCE` and waits for its
+            reference. Replays answer the same way while it waits.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WagerResult'
+              example:
+                transactionId: 0192f298-345e-7e38-af88-e43f851a819d
+                status: PENDING_REFERENCE
                 idempotentReplay: false
         '200':
           description: Replay of an operation already applied; nothing was applied again.
@@ -509,7 +538,9 @@ components:
           $ref: '#/components/schemas/MoneyInput'
         referenceExternalTransactionId:
           type: string
-          description: Operation being reversed; required by `REFUND` and `ROLLBACK`.
+          description: |
+            The provider's identifier of the referenced operation; required by
+            `REFUND` and `ROLLBACK`, optional for `WIN`, refused for the others.
 
     WagerResult:
       type: object
@@ -521,13 +552,18 @@ components:
           format: uuid
         status:
           type: string
-          enum: [PROCESSED, REJECTED]
+          enum: [PROCESSED, REJECTED, PENDING_REFERENCE]
         balance:
           $ref: '#/components/schemas/Money'
-          description: Balance right after the operation was applied; absent when `REJECTED`.
+          description: Balance right after the operation was applied; present only when `PROCESSED`.
         failureCode:
           type: string
-          description: Why the operation was `REJECTED`; absent otherwise.
+          description: |
+            Why the operation was `REJECTED`; absent otherwise. One of
+            `INSUFFICIENT_FUNDS`, `INSUFFICIENT_FUNDS_FOR_REVERSAL`,
+            `WALLET_PLAYER_MISMATCH`, `CURRENCY_MISMATCH`, `REFERENCE_MISMATCH`,
+            `REFERENCE_NOT_PROCESSED`, `REFERENCE_AMOUNT_MISMATCH` or
+            `REFERENCE_ALREADY_REVERSED`.
           example: INSUFFICIENT_FUNDS
         idempotentReplay:
           type: boolean

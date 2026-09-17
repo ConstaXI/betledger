@@ -121,13 +121,15 @@ func (h *WageringHandler) handleProcessWager(w http.ResponseWriter, r *http.Requ
 	}
 }
 
-// wagerResultStatus keeps a rejection apart from a success by status alone:
-// 422 for REJECTED, 201 when the operation was just applied and 200 for a
-// replay of an applied one.
+// wagerResultStatus tells the outcomes apart by status alone: 422 for REJECTED,
+// 202 for an operation still waiting for its reference, 201 when the operation
+// was just applied and 200 for a replay of an applied one.
 func wagerResultStatus(result usecase.WagerResult) int {
 	switch {
 	case result.State == wager.StateRejected:
 		return http.StatusUnprocessableEntity
+	case result.State == wager.StatePendingReference:
+		return http.StatusAccepted
 	case result.IdempotentReplay:
 		return http.StatusOK
 	default:

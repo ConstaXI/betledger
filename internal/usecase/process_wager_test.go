@@ -2,6 +2,7 @@ package usecase_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -20,15 +21,31 @@ func TestProcessWagerExecute(t *testing.T) {
 	t.Parallel()
 
 	brl := money.MustCurrency("BRL")
-	playerID := domain.NewID()
+	unchanged := func(*usecase.ProcessWagerInput) {}
+	operation := func(kind wager.Kind, externalID, referenceID string, amountMinor int64) func(*usecase.ProcessWagerInput) {
+		return func(input *usecase.ProcessWagerInput) {
+			input.Kind = kind
+			input.ExternalTransactionID = externalID
+			input.IdempotencyKey = "provider-a:" + externalID
+			input.ReferenceExternalTransactionID = referenceID
+			input.Money = money.MustNew(amountMinor, brl)
+		}
+	}
+	processed := []event.Type{event.TypeWagerTransactionProcessed, event.TypeWalletBalanceChanged}
+	rejected := []event.Type{event.TypeWagerTransactionRejected}
+	pending := []event.Type{event.TypeWagerTransactionPendingReference}
 
 	tests := []struct {
 		name              string
+		initialMinor      int64
+		earlier           []func(input *usecase.ProcessWagerInput)
 		mutate            func(input *usecase.ProcessWagerInput)
+		outboxErr         error
 		wantErr           error
 		wantState         wager.State
 		wantFailureCode   domain.FailureCode
 		wantBalance       money.Money
+		wantReplay        bool
 		wantWalletBalance money.Money
 		wantWalletVersion int64
 		wantTransactions  int
@@ -37,17 +54,19 @@ func TestProcessWagerExecute(t *testing.T) {
 	}{
 		{
 			name:              "should accept when the balance covers the bet",
-			mutate:            func(*usecase.ProcessWagerInput) {},
+			initialMinor:      10000,
+			mutate:            unchanged,
 			wantState:         wager.StateProcessed,
 			wantBalance:       money.MustNew(7500, brl),
 			wantWalletBalance: money.MustNew(7500, brl),
 			wantWalletVersion: 2,
 			wantTransactions:  1,
 			wantEntries:       1,
-			wantEventTypes:    []event.Type{event.TypeWagerTransactionProcessed, event.TypeWalletBalanceChanged},
+			wantEventTypes:    processed,
 		},
 		{
 			name:              "should accept when the bet takes the whole balance",
+			initialMinor:      10000,
 			mutate:            func(input *usecase.ProcessWagerInput) { input.Money = money.MustNew(10000, brl) },
 			wantState:         wager.StateProcessed,
 			wantBalance:       money.MustNew(0, brl),
@@ -55,30 +74,33 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 2,
 			wantTransactions:  1,
 			wantEntries:       1,
-			wantEventTypes:    []event.Type{event.TypeWagerTransactionProcessed, event.TypeWalletBalanceChanged},
+			wantEventTypes:    processed,
 		},
 		{
 			name:              "should return INSUFFICIENT_FUNDS when the bet exceeds the balance",
+			initialMinor:      10000,
 			mutate:            func(input *usecase.ProcessWagerInput) { input.Money = money.MustNew(10001, brl) },
 			wantState:         wager.StateRejected,
 			wantFailureCode:   domain.FailureCodeInsufficientFunds,
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantWalletVersion: 1,
 			wantTransactions:  1,
-			wantEventTypes:    []event.Type{event.TypeWagerTransactionRejected},
+			wantEventTypes:    rejected,
 		},
 		{
 			name:              "should return WALLET_PLAYER_MISMATCH when the player does not own the wallet",
+			initialMinor:      10000,
 			mutate:            func(input *usecase.ProcessWagerInput) { input.PlayerID = domain.NewID() },
 			wantState:         wager.StateRejected,
 			wantFailureCode:   domain.FailureCodeWalletPlayerMismatch,
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantWalletVersion: 1,
 			wantTransactions:  1,
-			wantEventTypes:    []event.Type{event.TypeWagerTransactionRejected},
+			wantEventTypes:    rejected,
 		},
 		{
-			name: "should return CURRENCY_MISMATCH when the bet is in another currency",
+			name:         "should return CURRENCY_MISMATCH when the bet is in another currency",
+			initialMinor: 10000,
 			mutate: func(input *usecase.ProcessWagerInput) {
 				input.Money = money.MustNew(2500, money.MustCurrency("USD"))
 			},
@@ -87,10 +109,11 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantWalletVersion: 1,
 			wantTransactions:  1,
-			wantEventTypes:    []event.Type{event.TypeWagerTransactionRejected},
+			wantEventTypes:    rejected,
 		},
 		{
 			name:              "should return WALLET_NOT_FOUND when the wallet does not exist",
+			initialMinor:      10000,
 			mutate:            func(input *usecase.ProcessWagerInput) { input.WalletID = domain.NewID() },
 			wantErr:           domain.FailureCodeWalletNotFound,
 			wantWalletBalance: money.MustNew(10000, brl),
@@ -98,6 +121,7 @@ func TestProcessWagerExecute(t *testing.T) {
 		},
 		{
 			name:              "should accept when a win credits the wallet",
+			initialMinor:      10000,
 			mutate:            func(input *usecase.ProcessWagerInput) { input.Kind = wager.KindWin },
 			wantState:         wager.StateProcessed,
 			wantBalance:       money.MustNew(12500, brl),
@@ -105,14 +129,12 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 2,
 			wantTransactions:  1,
 			wantEntries:       1,
-			wantEventTypes:    []event.Type{event.TypeWagerTransactionProcessed, event.TypeWalletBalanceChanged},
+			wantEventTypes:    processed,
 		},
 		{
-			name: "should accept when a loss records the round without moving the balance",
-			mutate: func(input *usecase.ProcessWagerInput) {
-				input.Kind = wager.KindLoss
-				input.Money = money.MustNew(0, brl)
-			},
+			name:              "should accept when a loss records the round without moving the balance",
+			initialMinor:      10000,
+			mutate:            operation(wager.KindLoss, "loss", "", 0),
 			wantState:         wager.StateProcessed,
 			wantBalance:       money.MustNew(10000, brl),
 			wantWalletBalance: money.MustNew(10000, brl),
@@ -121,7 +143,8 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantEventTypes:    []event.Type{event.TypeWagerTransactionProcessed},
 		},
 		{
-			name: "should return CURRENCY_MISMATCH when a loss is in another currency",
+			name:         "should return CURRENCY_MISMATCH when a loss is in another currency",
+			initialMinor: 10000,
 			mutate: func(input *usecase.ProcessWagerInput) {
 				input.Kind = wager.KindLoss
 				input.Money = money.MustNew(0, money.MustCurrency("USD"))
@@ -131,37 +154,27 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantWalletVersion: 1,
 			wantTransactions:  1,
-			wantEventTypes:    []event.Type{event.TypeWagerTransactionRejected},
-		},
-		{
-			name: "should return TRANSACTION_KIND_NOT_ALLOWED when a win references another operation",
-			mutate: func(input *usecase.ProcessWagerInput) {
-				input.Kind = wager.KindWin
-				input.ReferenceExternalTransactionID = "transaction-122"
-			},
-			wantErr:           domain.FailureCodeKindNotAllowed,
-			wantWalletBalance: money.MustNew(10000, brl),
-			wantWalletVersion: 1,
-		},
-		{
-			name: "should return TRANSACTION_KIND_NOT_ALLOWED when the kind is a reversal",
-			mutate: func(input *usecase.ProcessWagerInput) {
-				input.Kind = wager.KindRefund
-				input.ReferenceExternalTransactionID = "transaction-122"
-			},
-			wantErr:           domain.FailureCodeKindNotAllowed,
-			wantWalletBalance: money.MustNew(10000, brl),
-			wantWalletVersion: 1,
+			wantEventTypes:    rejected,
 		},
 		{
 			name:              "should return INVALID_AMOUNT when a loss carries an amount",
+			initialMinor:      10000,
 			mutate:            func(input *usecase.ProcessWagerInput) { input.Kind = wager.KindLoss },
 			wantErr:           domain.FailureCodeInvalidAmount,
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantWalletVersion: 1,
 		},
 		{
+			name:              "should return INVALID_AMOUNT when the bet is zero",
+			initialMinor:      10000,
+			mutate:            func(input *usecase.ProcessWagerInput) { input.Money = money.MustNew(0, brl) },
+			wantErr:           domain.FailureCodeInvalidAmount,
+			wantWalletBalance: money.MustNew(10000, brl),
+			wantWalletVersion: 1,
+		},
+		{
 			name:              "should return INVALID_INPUT when the idempotency key is missing",
+			initialMinor:      10000,
 			mutate:            func(input *usecase.ProcessWagerInput) { input.IdempotencyKey = "" },
 			wantErr:           domain.FailureCodeInvalidInput,
 			wantWalletBalance: money.MustNew(10000, brl),
@@ -169,117 +182,216 @@ func TestProcessWagerExecute(t *testing.T) {
 		},
 		{
 			name:              "should return INVALID_INPUT when correlationId is missing",
+			initialMinor:      10000,
 			mutate:            func(input *usecase.ProcessWagerInput) { input.CorrelationID = "" },
 			wantErr:           domain.FailureCodeInvalidInput,
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantWalletVersion: 1,
 		},
 		{
-			name:              "should return INVALID_AMOUNT when the bet is zero",
-			mutate:            func(input *usecase.ProcessWagerInput) { input.Money = money.MustNew(0, brl) },
-			wantErr:           domain.FailureCodeInvalidAmount,
+			name:              "should return ErrUnavailable when the outbox cannot be written",
+			initialMinor:      10000,
+			mutate:            unchanged,
+			outboxErr:         usecase.ErrUnavailable,
+			wantErr:           usecase.ErrUnavailable,
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantWalletVersion: 1,
 		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			w := mustWallet(t, playerID, money.MustNew(10000, brl))
-			transactor := newFakeTransactor(w)
-			uc := newProcessWager(transactor)
-			input := validBetInput(w.ID(), playerID)
-			test.mutate(&input)
-
-			got, err := uc.Execute(context.Background(), input)
-
-			assert.ErrorIs(t, err, test.wantErr)
-			assert.Equal(t, test.wantState, got.State)
-			assert.Equal(t, test.wantFailureCode, got.FailureCode)
-			assert.Equal(t, test.wantBalance, got.Balance)
-			assert.False(t, got.IdempotentReplay)
-			assert.Equal(t, test.wantWalletBalance, transactor.committed.wallets[w.ID()].Balance())
-			assert.Equal(t, test.wantWalletVersion, transactor.committed.wallets[w.ID()].Version())
-			assert.Len(t, transactor.committed.transactions, test.wantTransactions)
-			assert.Len(t, transactor.committed.entries, test.wantEntries)
-			assert.Equal(t, test.wantEventTypes, transactor.committed.eventTypes)
-		})
-	}
-}
-
-func TestProcessWagerReplaysTheOriginalResult(t *testing.T) {
-	t.Parallel()
-
-	brl := money.MustCurrency("BRL")
-	playerID := domain.NewID()
-	w := mustWallet(t, playerID, money.MustNew(10000, brl))
-	transactor := newFakeTransactor(w)
-	uc := newProcessWager(transactor)
-
-	first, err := uc.Execute(context.Background(), validBetInput(w.ID(), playerID))
-	require.NoError(t, err)
-
-	later := validBetInput(w.ID(), playerID)
-	later.ExternalTransactionID = "transaction-124"
-	later.IdempotencyKey = "provider-a:transaction-124"
-	_, err = uc.Execute(context.Background(), later)
-	require.NoError(t, err)
-
-	replay := validBetInput(w.ID(), playerID)
-	replay.CorrelationID = "req-retry"
-	got, err := uc.Execute(context.Background(), replay)
-
-	require.NoError(t, err)
-	assert.True(t, got.IdempotentReplay)
-	assert.Equal(t, first.TransactionID, got.TransactionID)
-	assert.Equal(t, money.MustNew(7500, brl), got.Balance, "a replay returns the balance observed originally")
-	assert.Equal(t, money.MustNew(5000, brl), transactor.committed.wallets[w.ID()].Balance())
-	assert.Len(t, transactor.committed.entries, 2)
-}
-
-func TestProcessWagerReplaysARejection(t *testing.T) {
-	t.Parallel()
-
-	brl := money.MustCurrency("BRL")
-	playerID := domain.NewID()
-	w := mustWallet(t, playerID, money.MustNew(1000, brl))
-	transactor := newFakeTransactor(w)
-	uc := newProcessWager(transactor)
-	input := validBetInput(w.ID(), playerID)
-
-	first, err := uc.Execute(context.Background(), input)
-	require.NoError(t, err)
-	got, err := uc.Execute(context.Background(), input)
-
-	require.NoError(t, err)
-	assert.Equal(t, wager.StateRejected, first.State)
-	assert.Equal(t, first.TransactionID, got.TransactionID)
-	assert.Equal(t, domain.FailureCodeInsufficientFunds, got.FailureCode)
-	assert.True(t, got.IdempotentReplay)
-	assert.Len(t, transactor.committed.transactions, 1)
-	assert.Equal(t, []event.Type{event.TypeWagerTransactionRejected}, transactor.committed.eventTypes)
-}
-
-func TestProcessWagerRejectsReusedIdentity(t *testing.T) {
-	t.Parallel()
-
-	brl := money.MustCurrency("BRL")
-
-	tests := []struct {
-		name   string
-		mutate func(input *usecase.ProcessWagerInput)
-	}{
 		{
-			name:   "should return IDEMPOTENCY_CONFLICT when the key is reused with a different payload",
-			mutate: func(input *usecase.ProcessWagerInput) { input.Money = money.MustNew(3000, brl) },
+			name:              "should report a replay with the original balance when the bet is resent after other movements",
+			initialMinor:      10000,
+			earlier:           []func(*usecase.ProcessWagerInput){unchanged, operation(wager.KindBet, "transaction-124", "", 2500)},
+			mutate:            func(input *usecase.ProcessWagerInput) { input.CorrelationID = "req-retry" },
+			wantState:         wager.StateProcessed,
+			wantBalance:       money.MustNew(7500, brl),
+			wantReplay:        true,
+			wantWalletBalance: money.MustNew(5000, brl),
+			wantWalletVersion: 3,
+			wantTransactions:  2,
+			wantEntries:       2,
+			wantEventTypes:    slices.Concat(processed, processed),
 		},
 		{
-			name: "should return IDEMPOTENCY_CONFLICT when the operation is resent with another key",
-			mutate: func(input *usecase.ProcessWagerInput) {
-				input.IdempotencyKey = "provider-a:transaction-123:retry"
+			name:              "should report a replay of INSUFFICIENT_FUNDS when the rejected bet is resent",
+			initialMinor:      1000,
+			earlier:           []func(*usecase.ProcessWagerInput){unchanged},
+			mutate:            unchanged,
+			wantState:         wager.StateRejected,
+			wantFailureCode:   domain.FailureCodeInsufficientFunds,
+			wantReplay:        true,
+			wantWalletBalance: money.MustNew(1000, brl),
+			wantWalletVersion: 1,
+			wantTransactions:  1,
+			wantEventTypes:    rejected,
+		},
+		{
+			name:              "should return IDEMPOTENCY_CONFLICT when the key is reused with a different payload",
+			initialMinor:      10000,
+			earlier:           []func(*usecase.ProcessWagerInput){unchanged},
+			mutate:            func(input *usecase.ProcessWagerInput) { input.Money = money.MustNew(3000, brl) },
+			wantErr:           domain.FailureCodeIdempotencyConflict,
+			wantWalletBalance: money.MustNew(7500, brl),
+			wantWalletVersion: 2,
+			wantTransactions:  1,
+			wantEntries:       1,
+			wantEventTypes:    processed,
+		},
+		{
+			name:              "should return IDEMPOTENCY_CONFLICT when the operation is resent with another key",
+			initialMinor:      10000,
+			earlier:           []func(*usecase.ProcessWagerInput){unchanged},
+			mutate:            func(input *usecase.ProcessWagerInput) { input.IdempotencyKey = "provider-a:retry" },
+			wantErr:           domain.FailureCodeIdempotencyConflict,
+			wantWalletBalance: money.MustNew(7500, brl),
+			wantWalletVersion: 2,
+			wantTransactions:  1,
+			wantEntries:       1,
+			wantEventTypes:    processed,
+		},
+		{
+			name:              "should accept when a refund returns a processed bet",
+			initialMinor:      10000,
+			earlier:           []func(*usecase.ProcessWagerInput){operation(wager.KindBet, "bet", "", 2500)},
+			mutate:            operation(wager.KindRefund, "refund", "bet", 2500),
+			wantState:         wager.StateProcessed,
+			wantBalance:       money.MustNew(10000, brl),
+			wantWalletBalance: money.MustNew(10000, brl),
+			wantWalletVersion: 3,
+			wantTransactions:  2,
+			wantEntries:       2,
+			wantEventTypes:    slices.Concat(processed, processed),
+		},
+		{
+			name:              "should accept when a win refers to a processed bet",
+			initialMinor:      10000,
+			earlier:           []func(*usecase.ProcessWagerInput){operation(wager.KindBet, "bet", "", 2500)},
+			mutate:            operation(wager.KindWin, "win", "bet", 4000),
+			wantState:         wager.StateProcessed,
+			wantBalance:       money.MustNew(11500, brl),
+			wantWalletBalance: money.MustNew(11500, brl),
+			wantWalletVersion: 3,
+			wantTransactions:  2,
+			wantEntries:       2,
+			wantEventTypes:    slices.Concat(processed, processed),
+		},
+		{
+			name:              "should accept when a rollback undoes a processed win",
+			initialMinor:      10000,
+			earlier:           []func(*usecase.ProcessWagerInput){operation(wager.KindWin, "win", "", 2500)},
+			mutate:            operation(wager.KindRollback, "rollback", "win", 2500),
+			wantState:         wager.StateProcessed,
+			wantBalance:       money.MustNew(10000, brl),
+			wantWalletBalance: money.MustNew(10000, brl),
+			wantWalletVersion: 3,
+			wantTransactions:  2,
+			wantEntries:       2,
+			wantEventTypes:    slices.Concat(processed, processed),
+		},
+		{
+			name:         "should return REFERENCE_ALREADY_REVERSED when a bet is refunded twice",
+			initialMinor: 10000,
+			earlier: []func(*usecase.ProcessWagerInput){
+				operation(wager.KindBet, "bet", "", 2500),
+				operation(wager.KindRefund, "refund-1", "bet", 2500),
 			},
+			mutate:            operation(wager.KindRefund, "refund-2", "bet", 2500),
+			wantState:         wager.StateRejected,
+			wantFailureCode:   domain.FailureCodeReferenceAlreadyReversed,
+			wantWalletBalance: money.MustNew(10000, brl),
+			wantWalletVersion: 3,
+			wantTransactions:  3,
+			wantEntries:       2,
+			wantEventTypes:    slices.Concat(processed, processed, rejected),
+		},
+		{
+			name:         "should return REFERENCE_ALREADY_REVERSED when a refunded bet is rolled back",
+			initialMinor: 10000,
+			earlier: []func(*usecase.ProcessWagerInput){
+				operation(wager.KindBet, "bet", "", 2500),
+				operation(wager.KindRefund, "refund", "bet", 2500),
+			},
+			mutate:            operation(wager.KindRollback, "rollback", "bet", 2500),
+			wantState:         wager.StateRejected,
+			wantFailureCode:   domain.FailureCodeReferenceAlreadyReversed,
+			wantWalletBalance: money.MustNew(10000, brl),
+			wantWalletVersion: 3,
+			wantTransactions:  3,
+			wantEntries:       2,
+			wantEventTypes:    slices.Concat(processed, processed, rejected),
+		},
+		{
+			name:              "should return REFERENCE_NOT_PROCESSED when the bet was rejected",
+			initialMinor:      1000,
+			earlier:           []func(*usecase.ProcessWagerInput){operation(wager.KindBet, "bet", "", 2500)},
+			mutate:            operation(wager.KindRefund, "refund", "bet", 2500),
+			wantState:         wager.StateRejected,
+			wantFailureCode:   domain.FailureCodeReferenceNotProcessed,
+			wantWalletBalance: money.MustNew(1000, brl),
+			wantWalletVersion: 1,
+			wantTransactions:  2,
+			wantEventTypes:    slices.Concat(rejected, rejected),
+		},
+		{
+			name:              "should return REFERENCE_AMOUNT_MISMATCH when a refund is partial",
+			initialMinor:      10000,
+			earlier:           []func(*usecase.ProcessWagerInput){operation(wager.KindBet, "bet", "", 2500)},
+			mutate:            operation(wager.KindRefund, "refund", "bet", 1000),
+			wantState:         wager.StateRejected,
+			wantFailureCode:   domain.FailureCodeReferenceAmountMismatch,
+			wantWalletBalance: money.MustNew(7500, brl),
+			wantWalletVersion: 2,
+			wantTransactions:  2,
+			wantEntries:       1,
+			wantEventTypes:    slices.Concat(processed, rejected),
+		},
+		{
+			name:         "should return INSUFFICIENT_FUNDS_FOR_REVERSAL when rolling back a spent win",
+			initialMinor: 0,
+			earlier: []func(*usecase.ProcessWagerInput){
+				operation(wager.KindWin, "win", "", 2500),
+				operation(wager.KindBet, "bet", "", 2000),
+			},
+			mutate:            operation(wager.KindRollback, "rollback", "win", 2500),
+			wantState:         wager.StateRejected,
+			wantFailureCode:   domain.FailureCodeInsufficientFundsForReversal,
+			wantWalletBalance: money.MustNew(500, brl),
+			wantWalletVersion: 3,
+			wantTransactions:  3,
+			wantEntries:       2,
+			wantEventTypes:    slices.Concat(processed, processed, rejected),
+		},
+		{
+			name:              "should report PENDING_REFERENCE when the referenced operation has not arrived",
+			initialMinor:      10000,
+			mutate:            operation(wager.KindRefund, "refund", "bet", 2500),
+			wantState:         wager.StatePendingReference,
+			wantWalletBalance: money.MustNew(10000, brl),
+			wantWalletVersion: 1,
+			wantTransactions:  1,
+			wantEventTypes:    pending,
+		},
+		{
+			name:              "should report PENDING_REFERENCE when the reference is itself pending",
+			initialMinor:      10000,
+			earlier:           []func(*usecase.ProcessWagerInput){operation(wager.KindRefund, "refund", "bet", 2500)},
+			mutate:            operation(wager.KindRollback, "rollback", "refund", 2500),
+			wantState:         wager.StatePendingReference,
+			wantWalletBalance: money.MustNew(10000, brl),
+			wantWalletVersion: 1,
+			wantTransactions:  2,
+			wantEventTypes:    slices.Concat(pending, pending),
+		},
+		{
+			name:              "should report a replay of PENDING_REFERENCE when the waiting refund is resent",
+			initialMinor:      10000,
+			earlier:           []func(*usecase.ProcessWagerInput){operation(wager.KindRefund, "refund", "bet", 2500)},
+			mutate:            operation(wager.KindRefund, "refund", "bet", 2500),
+			wantState:         wager.StatePendingReference,
+			wantReplay:        true,
+			wantWalletBalance: money.MustNew(10000, brl),
+			wantWalletVersion: 1,
+			wantTransactions:  1,
+			wantEventTypes:    pending,
 		},
 	}
 
@@ -288,67 +400,50 @@ func TestProcessWagerRejectsReusedIdentity(t *testing.T) {
 			t.Parallel()
 
 			playerID := domain.NewID()
-			w := mustWallet(t, playerID, money.MustNew(10000, brl))
-			transactor := newFakeTransactor(w)
-			uc := newProcessWager(transactor)
-			_, err := uc.Execute(context.Background(), validBetInput(w.ID(), playerID))
+			w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(test.initialMinor, brl))
 			require.NoError(t, err)
+			transactor := newFakeTransactor(w)
+			uc := usecase.NewProcessWager(transactor, fakeWallets{}, fakeTransactions{}, fakeLedger{},
+				fakeOutbox{err: test.outboxErr}, func() time.Time { return fixedNow })
+			base := usecase.ProcessWagerInput{
+				ProviderID:            "provider-a",
+				ExternalTransactionID: "transaction-123",
+				IdempotencyKey:        "provider-a:transaction-123",
+				PlayerID:              playerID,
+				WalletID:              w.ID(),
+				RoundID:               "round-987",
+				GameID:                "fortune-chimp",
+				Kind:                  wager.KindBet,
+				Money:                 money.MustNew(2500, brl),
+				CorrelationID:         "req-1",
+			}
+			var earlierIDs []domain.ID
+			for _, mutate := range test.earlier {
+				input := base
+				mutate(&input)
+				earlier, err := uc.Execute(context.Background(), input)
+				require.NoError(t, err)
+				earlierIDs = append(earlierIDs, earlier.TransactionID)
+			}
+			input := base
+			test.mutate(&input)
 
-			second := validBetInput(w.ID(), playerID)
-			test.mutate(&second)
-			got, err := uc.Execute(context.Background(), second)
+			got, err := uc.Execute(context.Background(), input)
 
-			assert.ErrorIs(t, err, domain.FailureCodeIdempotencyConflict)
-			assert.Equal(t, usecase.WagerResult{}, got)
-			assert.Equal(t, money.MustNew(7500, brl), transactor.committed.wallets[w.ID()].Balance())
-			assert.Len(t, transactor.committed.transactions, 1)
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantState, got.State)
+			assert.Equal(t, test.wantFailureCode, got.FailureCode)
+			assert.Equal(t, test.wantBalance, got.Balance)
+			assert.Equal(t, test.wantReplay, got.IdempotentReplay)
+			assert.Equal(t, test.wantReplay, slices.Contains(earlierIDs, got.TransactionID))
+			assert.Equal(t, test.wantWalletBalance, transactor.committed.wallets[w.ID()].Balance())
+			assert.Equal(t, test.wantWalletVersion, transactor.committed.wallets[w.ID()].Version())
+			assert.Len(t, transactor.committed.transactions, test.wantTransactions)
+			assert.Len(t, transactor.committed.entries, test.wantEntries)
+			assert.Equal(t, test.wantEventTypes, transactor.committed.eventTypes)
+			for _, e := range transactor.committed.events {
+				assert.Equal(t, fixedNow, e.OccurredAt)
+			}
 		})
-	}
-}
-
-func TestProcessWagerDoesNotApplyTheDebitWhenTheCommitFails(t *testing.T) {
-	t.Parallel()
-
-	brl := money.MustCurrency("BRL")
-	playerID := domain.NewID()
-	w := mustWallet(t, playerID, money.MustNew(10000, brl))
-	transactor := newFakeTransactor(w)
-	uc := usecase.NewProcessWager(transactor, fakeWallets{}, fakeTransactions{}, fakeLedger{},
-		fakeOutbox{err: usecase.ErrUnavailable}, func() time.Time { return fixedNow })
-
-	got, err := uc.Execute(context.Background(), validBetInput(w.ID(), playerID))
-
-	assert.ErrorIs(t, err, usecase.ErrUnavailable)
-	assert.Equal(t, usecase.WagerResult{}, got)
-	assert.Equal(t, money.MustNew(10000, brl), transactor.committed.wallets[w.ID()].Balance())
-	assert.Equal(t, int64(1), transactor.committed.wallets[w.ID()].Version())
-	assert.Empty(t, transactor.committed.transactions)
-}
-
-func newProcessWager(transactor *fakeTransactor) *usecase.ProcessWager {
-	return usecase.NewProcessWager(transactor, fakeWallets{}, fakeTransactions{}, fakeLedger{}, fakeOutbox{},
-		func() time.Time { return fixedNow })
-}
-
-func mustWallet(t *testing.T, playerID domain.ID, balance money.Money) *wallet.Wallet {
-	t.Helper()
-
-	w, err := wallet.Open(domain.NewID(), playerID, balance)
-	require.NoError(t, err)
-	return w
-}
-
-func validBetInput(walletID, playerID domain.ID) usecase.ProcessWagerInput {
-	return usecase.ProcessWagerInput{
-		ProviderID:            "provider-a",
-		ExternalTransactionID: "transaction-123",
-		IdempotencyKey:        "provider-a:transaction-123",
-		PlayerID:              playerID,
-		WalletID:              walletID,
-		RoundID:               "round-987",
-		GameID:                "fortune-chimp",
-		Kind:                  wager.KindBet,
-		Money:                 money.MustNew(2500, money.MustCurrency("BRL")),
-		CorrelationID:         "req-1",
 	}
 }

@@ -48,3 +48,12 @@ SELECT *
 FROM wager_transactions
 WHERE provider_id = @provider_id
   AND external_transaction_id = @external_transaction_id;
+
+-- name: ExistsProcessedReversal :one
+SELECT EXISTS (
+    SELECT 1
+    FROM wager_transactions
+    WHERE reference_transaction_id = @reference_transaction_id
+      AND kind IN ('REFUND', 'ROLLBACK')
+      AND state = 'PROCESSED'
+);

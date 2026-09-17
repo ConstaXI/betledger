@@ -82,6 +82,19 @@ func WagerInput(w *wallet.Wallet, kind wager.Kind, externalID string, amountMino
 	}
 }
 
+// ReferringInput builds an operation of the kind that refers to another one on
+// the same wallet, both identifiers scoped like WagerInput scopes them.
+func ReferringInput(
+	w *wallet.Wallet,
+	kind wager.Kind,
+	externalID, referenceID string,
+	amountMinor int64,
+) usecase.ProcessWagerInput {
+	input := WagerInput(w, kind, externalID, amountMinor)
+	input.ReferenceExternalTransactionID = w.ID().String() + ":" + referenceID
+	return input
+}
+
 // WalletState reads the stored balance, version and number of debits.
 func (p *Postgres) WalletState(t *testing.T, walletID domain.ID) (balance, version int64, debits int) {
 	t.Helper()

@@ -1,6 +1,7 @@
 package wager_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -159,24 +160,6 @@ func TestTransactionStateMachine(t *testing.T) {
 	assert.ErrorIs(t, transaction.MarkProcessed(domaintest.MustParseMoney(t, "10.00", "BRL")), domain.FailureCodeInvalidStateTransition)
 }
 
-func TestTransactionPendingReferenceFlow(t *testing.T) {
-	t.Parallel()
-
-	transaction := domaintest.MustExternalTransaction(t, wager.KindRefund, "25.00")
-
-	require.NoError(t, transaction.MarkPendingReference())
-	assert.Equal(t, wager.StatePendingReference, transaction.State())
-
-	referenceID := domain.NewID()
-	require.NoError(t, transaction.ResolveReference(referenceID))
-
-	resolved, ok := transaction.ReferenceTransactionID()
-	assert.True(t, ok)
-	assert.Equal(t, referenceID, resolved)
-
-	assert.NoError(t, transaction.MarkProcessed(domaintest.MustParseMoney(t, "125.00", "BRL")))
-}
-
 func TestTransactionRejectionRequiresFailureCode(t *testing.T) {
 	t.Parallel()
 
@@ -265,6 +248,240 @@ func TestTransactionStateIsTerminal(t *testing.T) {
 			t.Parallel()
 
 			assert.Equal(t, test.wantResult, test.state.IsTerminal())
+		})
+	}
+}
+
+func TestTransactionResolveReference(t *testing.T) {
+	t.Parallel()
+
+	base := domaintest.ValidExternalParams(t, wager.KindBet, "25.00")
+	processed := func(reference *wager.Transaction) error {
+		return reference.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"))
+	}
+	rejected := func(reference *wager.Transaction) error {
+		return reference.MarkRejected(domain.FailureCodeInsufficientFunds)
+	}
+	pending := func(*wager.Transaction) error { return nil }
+	unchanged := func(*wager.NewExternalParams) {}
+
+	tests := []struct {
+		name            string
+		kind            wager.Kind
+		amount          string
+		referenceKind   wager.Kind
+		referenceAmount string
+		mutateReference func(params *wager.NewExternalParams)
+		conclude        func(reference *wager.Transaction) error
+		wantErr         error
+		wantRejected    bool
+		wantResolved    bool
+	}{
+		{
+			name:            "should accept when a win refers to a bet of the round",
+			kind:            wager.KindWin,
+			amount:          "40.00",
+			referenceKind:   wager.KindBet,
+			referenceAmount: "25.00",
+			mutateReference: unchanged,
+			conclude:        processed,
+			wantResolved:    true,
+		},
+		{
+			name:            "should accept when a refund returns the whole bet",
+			kind:            wager.KindRefund,
+			amount:          "25.00",
+			referenceKind:   wager.KindBet,
+			referenceAmount: "25.00",
+			mutateReference: unchanged,
+			conclude:        processed,
+			wantResolved:    true,
+		},
+		{
+			name:            "should accept when a rollback undoes a bet",
+			kind:            wager.KindRollback,
+			amount:          "25.00",
+			referenceKind:   wager.KindBet,
+			referenceAmount: "25.00",
+			mutateReference: unchanged,
+			conclude:        processed,
+			wantResolved:    true,
+		},
+		{
+			name:            "should accept when a rollback undoes a win",
+			kind:            wager.KindRollback,
+			amount:          "25.00",
+			referenceKind:   wager.KindWin,
+			referenceAmount: "25.00",
+			mutateReference: unchanged,
+			conclude:        processed,
+			wantResolved:    true,
+		},
+		{
+			name:            "should accept when a rollback undoes a refund",
+			kind:            wager.KindRollback,
+			amount:          "25.00",
+			referenceKind:   wager.KindRefund,
+			referenceAmount: "25.00",
+			mutateReference: func(params *wager.NewExternalParams) { params.ReferenceExternalTransactionID = "transaction-121" },
+			conclude:        processed,
+			wantResolved:    true,
+		},
+		{
+			name:            "should return REFERENCE_MISMATCH when a refund refers to a win",
+			kind:            wager.KindRefund,
+			amount:          "25.00",
+			referenceKind:   wager.KindWin,
+			referenceAmount: "25.00",
+			mutateReference: unchanged,
+			conclude:        processed,
+			wantErr:         domain.FailureCodeReferenceMismatch,
+			wantRejected:    true,
+		},
+		{
+			name:            "should return REFERENCE_MISMATCH when a rollback refers to a loss",
+			kind:            wager.KindRollback,
+			amount:          "25.00",
+			referenceKind:   wager.KindLoss,
+			referenceAmount: "0.00",
+			mutateReference: unchanged,
+			conclude:        processed,
+			wantErr:         domain.FailureCodeReferenceMismatch,
+			wantRejected:    true,
+		},
+		{
+			name:            "should return REFERENCE_NOT_PROCESSED when the reference was rejected",
+			kind:            wager.KindRefund,
+			amount:          "25.00",
+			referenceKind:   wager.KindBet,
+			referenceAmount: "25.00",
+			mutateReference: unchanged,
+			conclude:        rejected,
+			wantErr:         domain.FailureCodeReferenceNotProcessed,
+			wantRejected:    true,
+		},
+		{
+			name:            "should return REFERENCE_NOT_PROCESSED when the reference is still pending",
+			kind:            wager.KindRefund,
+			amount:          "25.00",
+			referenceKind:   wager.KindBet,
+			referenceAmount: "25.00",
+			mutateReference: unchanged,
+			conclude:        pending,
+			wantErr:         domain.FailureCodeReferenceNotProcessed,
+			wantRejected:    true,
+		},
+		{
+			name:            "should return REFERENCE_MISMATCH when the reference is from another round",
+			kind:            wager.KindRefund,
+			amount:          "25.00",
+			referenceKind:   wager.KindBet,
+			referenceAmount: "25.00",
+			mutateReference: func(params *wager.NewExternalParams) { params.RoundID = "round-988" },
+			conclude:        processed,
+			wantErr:         domain.FailureCodeReferenceMismatch,
+			wantRejected:    true,
+		},
+		{
+			name:            "should return REFERENCE_MISMATCH when the reference is from another wallet",
+			kind:            wager.KindRefund,
+			amount:          "25.00",
+			referenceKind:   wager.KindBet,
+			referenceAmount: "25.00",
+			mutateReference: func(params *wager.NewExternalParams) { params.WalletID = domain.NewID() },
+			conclude:        processed,
+			wantErr:         domain.FailureCodeReferenceMismatch,
+			wantRejected:    true,
+		},
+		{
+			name:            "should return REFERENCE_MISMATCH when the reference is from another player",
+			kind:            wager.KindRefund,
+			amount:          "25.00",
+			referenceKind:   wager.KindBet,
+			referenceAmount: "25.00",
+			mutateReference: func(params *wager.NewExternalParams) { params.PlayerID = domain.NewID() },
+			conclude:        processed,
+			wantErr:         domain.FailureCodeReferenceMismatch,
+			wantRejected:    true,
+		},
+		{
+			name:            "should return REFERENCE_MISMATCH when the reference is in another currency",
+			kind:            wager.KindRefund,
+			amount:          "25.00",
+			referenceKind:   wager.KindBet,
+			referenceAmount: "25.00",
+			mutateReference: func(params *wager.NewExternalParams) {
+				params.Money = domaintest.MustParseMoney(t, "25.00", "USD")
+			},
+			conclude: func(reference *wager.Transaction) error {
+				return reference.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "USD"))
+			},
+			wantErr:      domain.FailureCodeReferenceMismatch,
+			wantRejected: true,
+		},
+		{
+			name:            "should return REFERENCE_AMOUNT_MISMATCH when a refund is partial",
+			kind:            wager.KindRefund,
+			amount:          "20.00",
+			referenceKind:   wager.KindBet,
+			referenceAmount: "25.00",
+			mutateReference: unchanged,
+			conclude:        processed,
+			wantErr:         domain.FailureCodeReferenceAmountMismatch,
+			wantRejected:    true,
+		},
+		{
+			name:            "should return INVALID_INPUT when the reference belongs to another provider",
+			kind:            wager.KindRefund,
+			amount:          "25.00",
+			referenceKind:   wager.KindBet,
+			referenceAmount: "25.00",
+			mutateReference: func(params *wager.NewExternalParams) { params.ProviderID = "provider-b" },
+			conclude:        processed,
+			wantErr:         domain.FailureCodeInvalidInput,
+		},
+		{
+			name:            "should return INVALID_INPUT when the reference is another operation",
+			kind:            wager.KindRefund,
+			amount:          "25.00",
+			referenceKind:   wager.KindBet,
+			referenceAmount: "25.00",
+			mutateReference: func(params *wager.NewExternalParams) { params.ExternalTransactionID = "transaction-999" },
+			conclude:        processed,
+			wantErr:         domain.FailureCodeInvalidInput,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			operationParams := base
+			operationParams.ID = domain.NewID()
+			operationParams.Kind = test.kind
+			operationParams.Money = domaintest.MustParseMoney(t, test.amount, "BRL")
+			operationParams.ReferenceExternalTransactionID = "transaction-122"
+			operation, err := wager.NewExternal(operationParams)
+			require.NoError(t, err)
+
+			referenceParams := base
+			referenceParams.ID = domain.NewID()
+			referenceParams.Kind = test.referenceKind
+			referenceParams.ExternalTransactionID = "transaction-122"
+			referenceParams.IdempotencyKey = "provider-a:transaction-122"
+			referenceParams.Money = domaintest.MustParseMoney(t, test.referenceAmount, "BRL")
+			test.mutateReference(&referenceParams)
+			reference, err := wager.NewExternal(referenceParams)
+			require.NoError(t, err)
+			require.NoError(t, test.conclude(reference))
+
+			err = operation.ResolveReference(reference)
+
+			resolvedID, resolved := operation.ReferenceTransactionID()
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantRejected, errors.Is(err, domain.ErrRejected))
+			assert.Equal(t, test.wantResolved, resolved)
+			assert.Equal(t, test.wantResolved, resolvedID == reference.ID())
 		})
 	}
 }

@@ -74,3 +74,38 @@ func MustExternalTransaction(t testing.TB, kind wager.Kind, amount string) *wage
 	require.NoError(t, err)
 	return transaction
 }
+
+// MustProcessedReference returns a PROCESSED operation of the kind on the
+// wallet, identified as transaction-122, the reference ValidExternalParams
+// gives to reversals. It returns nil when kind is empty, for operations that
+// refer to nothing.
+func MustProcessedReference(t testing.TB, w *wallet.Wallet, kind wager.Kind, amount string) *wager.Transaction {
+	t.Helper()
+
+	if kind == "" {
+		return nil
+	}
+	params := ValidExternalParams(t, kind, amount)
+	params.ExternalTransactionID = "transaction-122"
+	params.IdempotencyKey = "provider-a:transaction-122"
+	if kind.RequiresReference() {
+		params.ReferenceExternalTransactionID = "transaction-121"
+	}
+	params.WalletID = w.ID()
+	params.PlayerID = w.PlayerID()
+	reference, err := wager.NewExternal(params)
+	require.NoError(t, err)
+	require.NoError(t, reference.MarkProcessed(w.Balance()))
+	return reference
+}
+
+// MustResolveReference resolves the operation to the reference, failing the
+// test otherwise. It does nothing when reference is nil.
+func MustResolveReference(t testing.TB, operation, reference *wager.Transaction) {
+	t.Helper()
+
+	if reference == nil {
+		return
+	}
+	require.NoError(t, operation.ResolveReference(reference))
+}

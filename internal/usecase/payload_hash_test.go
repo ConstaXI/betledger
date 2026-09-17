@@ -15,7 +15,18 @@ import (
 func TestPayloadHash(t *testing.T) {
 	t.Parallel()
 
-	base := validBetInput(domain.NewID(), domain.NewID())
+	base := usecase.ProcessWagerInput{
+		ProviderID:            "provider-a",
+		ExternalTransactionID: "transaction-123",
+		IdempotencyKey:        "provider-a:transaction-123",
+		PlayerID:              domain.NewID(),
+		WalletID:              domain.NewID(),
+		RoundID:               "round-987",
+		GameID:                "fortune-chimp",
+		Kind:                  wager.KindBet,
+		Money:                 money.MustNew(2500, money.MustCurrency("BRL")),
+		CorrelationID:         "req-1",
+	}
 	baseHash, err := usecase.PayloadHash(base)
 	require.NoError(t, err)
 	equivalentAmount, err := money.Parse("25", "BRL")

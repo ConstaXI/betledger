@@ -2,6 +2,8 @@
 package wallet
 
 import (
+	"errors"
+
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/ledger"
 	"github.com/davibanfi/betledger/internal/domain/money"
@@ -73,13 +75,15 @@ func (w *Wallet) Debit(amount money.Money, transactionID domain.ID) (*ledger.Ent
 	return w.move(amount, transactionID, ledger.Debit)
 }
 
-// Apply moves the wallet as the operation demands: a BET debits, a WIN credits
-// and a LOSS moves nothing, returning a nil entry. Refusals — a player who does
-// not own the wallet, another currency or insufficient funds — are errors of
-// class domain.ErrRejected, meant to be recorded rather than rolled back. An
-// operation of another wallet, or a reversal, which needs its reference
-// resolved first, is a validation error.
-func (w *Wallet) Apply(operation *wager.Transaction) (*ledger.Entry, error) {
+// Apply moves the wallet as the operation demands: a BET debits, a WIN or a
+// REFUND credits, a LOSS moves nothing and returns a nil entry, and a ROLLBACK
+// moves against its reference, crediting a BET and debiting a WIN or a REFUND.
+// A reversal needs the reference it resolved to; other kinds ignore it.
+// Refusals — a player who does not own the wallet, another currency or
+// insufficient funds — are errors of class domain.ErrRejected, meant to be
+// recorded rather than rolled back; a reversal short of funds is refused with
+// FailureCodeInsufficientFundsForReversal, apart from a BET.
+func (w *Wallet) Apply(operation, reference *wager.Transaction) (*ledger.Entry, error) {
 	if operation == nil {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "transaction is required")
 	}
@@ -87,9 +91,12 @@ func (w *Wallet) Apply(operation *wager.Transaction) (*ledger.Entry, error) {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput,
 			"transaction %s belongs to wallet %s, not %s", operation.ID(), operation.WalletID(), w.id)
 	}
-	if operation.Kind() != wager.KindBet && operation.Kind() != wager.KindWin && operation.Kind() != wager.KindLoss {
-		return nil, domain.ValidationError(domain.FailureCodeInvalidInput,
-			"%s cannot be applied without resolving its reference", operation.Kind())
+	if operation.Kind().IsReversal() {
+		referenceID, resolved := operation.ReferenceTransactionID()
+		if !resolved || reference == nil || reference.ID() != referenceID {
+			return nil, domain.ValidationError(domain.FailureCodeInvalidInput,
+				"%s %s cannot be applied without its resolved reference", operation.Kind(), operation.ID())
+		}
 	}
 	if operation.PlayerID() != w.playerID {
 		return nil, domain.RejectionError(domain.FailureCodeWalletPlayerMismatch,
@@ -100,13 +107,22 @@ func (w *Wallet) Apply(operation *wager.Transaction) (*ledger.Entry, error) {
 			"wallet %s holds %s, not %s", w.id, w.Currency(), operation.Money().Currency())
 	}
 
-	switch operation.Kind() {
-	case wager.KindBet:
-		return w.Debit(operation.Money(), operation.ID())
-	case wager.KindWin:
-		return w.Credit(operation.Money(), operation.ID())
-	default:
+	switch {
+	case operation.Kind() == wager.KindLoss:
 		return nil, nil
+	case operation.Kind() == wager.KindBet:
+		return w.Debit(operation.Money(), operation.ID())
+	case operation.Kind() == wager.KindRollback && reference.Kind() != wager.KindBet:
+		entry, err := w.Debit(operation.Money(), operation.ID())
+		if errors.Is(err, domain.ErrInsufficientFunds) {
+			return nil, domain.RejectionErrorWithCause(domain.ErrInsufficientFunds,
+				domain.FailureCodeInsufficientFundsForReversal,
+				"insufficient funds to roll back %s: balance %s, debit %s",
+				reference.ExternalTransactionID(), w.balance, operation.Money())
+		}
+		return entry, err
+	default:
+		return w.Credit(operation.Money(), operation.ID())
 	}
 }
 

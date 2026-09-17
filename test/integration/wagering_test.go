@@ -11,6 +11,7 @@ import (
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
+	"github.com/davibanfi/betledger/internal/usecase"
 	"github.com/davibanfi/betledger/test/testenv"
 )
 
@@ -26,9 +27,7 @@ func TestWageringEndpointAnswersEveryOutcome(t *testing.T) {
 
 	steps := []struct {
 		name            string
-		kind            wager.Kind
-		externalID      string
-		amountMinor     int64
+		input           usecase.ProcessWagerInput
 		wantStatus      int
 		wantState       string
 		wantAmount      string
@@ -36,56 +35,57 @@ func TestWageringEndpointAnswersEveryOutcome(t *testing.T) {
 		wantReplay      bool
 	}{
 		{
-			name:        "should return 201 when a bet is applied",
-			kind:        wager.KindBet,
-			externalID:  "bet",
-			amountMinor: 2500,
-			wantStatus:  http.StatusCreated,
-			wantState:   "PROCESSED",
-			wantAmount:  "75.00",
+			name:       "should return 201 when a bet is applied",
+			input:      testenv.WagerInput(w, wager.KindBet, "bet", 2500),
+			wantStatus: http.StatusCreated,
+			wantState:  "PROCESSED",
+			wantAmount: "75.00",
 		},
 		{
-			name:        "should return 201 when a win is applied",
-			kind:        wager.KindWin,
-			externalID:  "win",
-			amountMinor: 1000,
-			wantStatus:  http.StatusCreated,
-			wantState:   "PROCESSED",
-			wantAmount:  "85.00",
+			name:       "should return 201 when a win is applied",
+			input:      testenv.WagerInput(w, wager.KindWin, "win", 1000),
+			wantStatus: http.StatusCreated,
+			wantState:  "PROCESSED",
+			wantAmount: "85.00",
 		},
 		{
-			name:        "should return 201 when a loss is recorded",
-			kind:        wager.KindLoss,
-			externalID:  "loss",
-			amountMinor: 0,
-			wantStatus:  http.StatusCreated,
-			wantState:   "PROCESSED",
-			wantAmount:  "85.00",
+			name:       "should return 201 when a loss is recorded",
+			input:      testenv.WagerInput(w, wager.KindLoss, "loss", 0),
+			wantStatus: http.StatusCreated,
+			wantState:  "PROCESSED",
+			wantAmount: "85.00",
 		},
 		{
-			name:        "should return 200 when the bet is sent again",
-			kind:        wager.KindBet,
-			externalID:  "bet",
-			amountMinor: 2500,
-			wantStatus:  http.StatusOK,
-			wantState:   "PROCESSED",
-			wantAmount:  "75.00",
-			wantReplay:  true,
+			name:       "should return 200 when the bet is sent again",
+			input:      testenv.WagerInput(w, wager.KindBet, "bet", 2500),
+			wantStatus: http.StatusOK,
+			wantState:  "PROCESSED",
+			wantAmount: "75.00",
+			wantReplay: true,
+		},
+		{
+			name:       "should return 201 when the win is rolled back",
+			input:      testenv.ReferringInput(w, wager.KindRollback, "rollback-win", "win", 1000),
+			wantStatus: http.StatusCreated,
+			wantState:  "PROCESSED",
+			wantAmount: "75.00",
+		},
+		{
+			name:       "should return 202 when a refund arrives before its bet",
+			input:      testenv.ReferringInput(w, wager.KindRefund, "early-refund", "late-bet", 1000),
+			wantStatus: http.StatusAccepted,
+			wantState:  "PENDING_REFERENCE",
 		},
 		{
 			name:            "should return 422 INSUFFICIENT_FUNDS when the bet exceeds the balance",
-			kind:            wager.KindBet,
-			externalID:      "too-large",
-			amountMinor:     9000,
+			input:           testenv.WagerInput(w, wager.KindBet, "too-large", 9000),
 			wantStatus:      http.StatusUnprocessableEntity,
 			wantState:       "REJECTED",
 			wantFailureCode: "INSUFFICIENT_FUNDS",
 		},
 		{
 			name:            "should return 422 INSUFFICIENT_FUNDS when the rejected bet is sent again",
-			kind:            wager.KindBet,
-			externalID:      "too-large",
-			amountMinor:     9000,
+			input:           testenv.WagerInput(w, wager.KindBet, "too-large", 9000),
 			wantStatus:      http.StatusUnprocessableEntity,
 			wantState:       "REJECTED",
 			wantFailureCode: "INSUFFICIENT_FUNDS",
@@ -94,7 +94,7 @@ func TestWageringEndpointAnswersEveryOutcome(t *testing.T) {
 	}
 
 	for _, step := range steps {
-		status, body := application.SendWager(t, testenv.WagerInput(w, step.kind, step.externalID, step.amountMinor))
+		status, body := application.SendWager(t, step.input)
 
 		assert.Equal(t, step.wantStatus, status, step.name)
 		assert.Equal(t, step.wantState, body.Status, step.name)
@@ -112,7 +112,7 @@ func TestWageringEndpointAnswersEveryOutcome(t *testing.T) {
 	assert.Equal(t, "WALLET_NOT_FOUND", notFoundBody.Error.Code)
 
 	balance, version, _ := database.WalletState(t, w.ID())
-	assert.Equal(t, int64(8500), balance)
-	assert.Equal(t, int64(3), version)
+	assert.Equal(t, int64(7500), balance)
+	assert.Equal(t, int64(4), version)
 	database.AssertLedgerReconciles(t, w.ID())
 }

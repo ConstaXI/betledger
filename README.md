@@ -12,8 +12,9 @@ O projeto está em construção incremental. O que existe hoje:
   `WalletLedgerEntry` e os eventos de integração.
 - **Abertura de carteira de ponta a ponta** — `POST /wallets`, use case,
   PostgreSQL com migrations e outbox transacional.
-- **Apostas `BET`, `WIN` e `LOSS`** — `POST /wagering/transactions`, com
-  idempotência persistente e lock por carteira.
+- **Os cinco tipos de operação** — `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`
+  em `POST /wagering/transactions`, com idempotência persistente, lock por
+  carteira e no máximo uma reversão por operação, imposta também pelo banco.
 - **Autenticação e autorização** — Keycloak no Compose; os endpoints de negócio
   exigem um access token `client_credentials` com o papel adequado, e cada
   provedor só age em nome próprio.
@@ -22,8 +23,8 @@ O projeto está em construção incremental. O que existe hoje:
 - **Health checks** — liveness em `GET /health/live` e readiness, que checa o
   banco, em `GET /health/ready`.
 
-Ainda **não** existem: reversões (`REFUND`, `ROLLBACK`) e `WIN` com referência,
-as rotas de leitura, SQS e o worker que publica a outbox. A seção
+Ainda **não** existem: o worker que retoma operações em `PENDING_REFERENCE`, as
+rotas de leitura, SQS e o worker que publica a outbox. A seção
 [Próximos passos](#próximos-passos) lista a ordem prevista.
 
 ## Pré-requisitos
@@ -206,12 +207,25 @@ HTTP/1.1 201 Created
 }
 ```
 
-`BET` debita, `WIN` credita e `LOSS`, sempre com valor `"0.00"`, só registra o
-desfecho da rodada. O header `Idempotency-Key` é obrigatório.
+O header `Idempotency-Key` é obrigatório.
+
+| Tipo | Movimento | Referência (`referenceExternalTransactionId`) |
+| --- | --- | --- |
+| `BET` | débito | nenhuma |
+| `WIN` | crédito | opcional: um `BET` da mesma rodada |
+| `LOSS` | nenhum; valor sempre `"0.00"` | nenhuma |
+| `REFUND` | crédito | obrigatória: um `BET` |
+| `ROLLBACK` | contrário ao da referência | obrigatória: um `BET`, `WIN` ou `REFUND` |
+
+A referência precisa estar `PROCESSED` e ser do mesmo jogador, carteira, moeda e
+rodada; numa reversão, também do mesmo valor. Cada operação é revertida no
+máximo uma vez. Se a referência ainda não chegou, a operação fica em
+`PENDING_REFERENCE` e não move dinheiro.
 
 | Status | Quando |
 | --- | --- |
 | `201` | Operação aplicada agora |
+| `202` | Operação gravada em `PENDING_REFERENCE`, esperando a referência |
 | `200` | Replay de operação já aplicada, com `idempotentReplay: true` e o saldo original |
 | `422` | Recusa de negócio, gravada como `REJECTED`, com `failureCode` no corpo do resultado; o replay responde igual |
 | `409` | `IDEMPOTENCY_CONFLICT`: chave reutilizada com outro corpo, ou operação reenviada com outra chave |
@@ -320,7 +334,7 @@ implementando as portas dos casos de uso.
 
 Na ordem prevista, seguindo [SPECS.md](SPECS.md):
 
-1. Reversões e `WIN` com referência, com resolução de referências pendentes
-   (seções 5 e 8).
+1. Worker que retoma operações em `PENDING_REFERENCE`, com backoff e expiração
+   (seção 7).
 2. SQS com inbox e o worker de publicação da outbox (seções 10 e 11).
 3. Rotas de leitura, observabilidade e reconciliação (seções 9 e 12).

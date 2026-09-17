@@ -155,6 +155,21 @@ func (fakeTransactions) FindByExternalID(ctx context.Context, providerID, extern
 	return nil, false, nil
 }
 
+func (fakeTransactions) HasProcessedReversal(ctx context.Context, referenceID domain.ID) (bool, error) {
+	tx, err := transactionFrom(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, transaction := range tx.committed.transactions {
+		resolved, ok := transaction.ReferenceTransactionID()
+		if ok && resolved == referenceID && transaction.Kind().IsReversal() &&
+			transaction.State() == wager.StateProcessed {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 type fakeLedger struct{}
 
 func (fakeLedger) Append(ctx context.Context, entry *ledger.Entry) error {

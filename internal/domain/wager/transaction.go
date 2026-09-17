@@ -3,6 +3,8 @@
 package wager
 
 import (
+	"slices"
+
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/money"
 )
@@ -104,6 +106,10 @@ func NewExternal(params NewExternalParams) (*Transaction, error) {
 	}
 	if err := validateKindReference(params.Kind, params.ReferenceExternalTransactionID); err != nil {
 		return nil, err
+	}
+	if params.ReferenceExternalTransactionID == params.ExternalTransactionID {
+		return nil, domain.ValidationError(domain.FailureCodeInvalidInput,
+			"operation %s cannot refer to itself", params.ExternalTransactionID)
 	}
 
 	return &Transaction{
@@ -250,9 +256,9 @@ func validateKindReference(kind Kind, reference string) error {
 
 // MarkPendingReference records the wait for a reference not yet available.
 func (t *Transaction) MarkPendingReference() error {
-	if !t.kind.AllowsReference() {
+	if t.referenceExternalTransactionID == "" {
 		return domain.ValidationError(domain.FailureCodeInvalidStateTransition,
-			"%s does not depend on a reference", t.kind)
+			"%s %s does not depend on a reference", t.kind, t.externalTransactionID)
 	}
 	return t.transitionTo(StatePendingReference)
 }
@@ -300,21 +306,52 @@ func (t *Transaction) MarkFailed(code domain.FailureCode) error {
 	return nil
 }
 
-// ResolveReference attaches the internal reference found for the operation.
-func (t *Transaction) ResolveReference(referenceID domain.ID) error {
-	if !t.kind.AllowsReference() {
-		return domain.ValidationError(domain.FailureCodeInvalidStateTransition,
-			"%s does not accept a reference", t.kind)
-	}
-	if err := domain.RequireID(referenceID, "referenceTransactionId"); err != nil {
-		return err
+// ResolveReference checks the operation against the one it references and, when
+// they agree, attaches it. The reference must be PROCESSED and of a kind the
+// operation may refer to: a WIN or a REFUND refers to a BET, and a ROLLBACK to a
+// BET, a WIN or a REFUND. Both must share provider, player, wallet, currency and
+// round, and a reversal must carry the same amount. A disagreement is a
+// rejection, meant to be recorded; the caller decides what to do with a
+// reference still pending.
+func (t *Transaction) ResolveReference(reference *Transaction) error {
+	if reference == nil || t.referenceExternalTransactionID == "" {
+		return domain.ValidationError(domain.FailureCodeInvalidInput,
+			"%s %s has no reference to resolve", t.kind, t.externalTransactionID)
 	}
 	if t.state.IsTerminal() {
 		return domain.ValidationError(domain.FailureCodeInvalidStateTransition,
 			"operation in terminal state %s accepts no further changes", t.state)
 	}
-	t.referenceTransactionID = referenceID
+	if reference.providerID != t.providerID || reference.externalTransactionID != t.referenceExternalTransactionID {
+		return domain.ValidationError(domain.FailureCodeInvalidInput,
+			"%s %s is not the reference %s of provider %s", reference.kind, reference.externalTransactionID,
+			t.referenceExternalTransactionID, t.providerID)
+	}
+	if !slices.Contains(referableKinds[t.kind], reference.kind) {
+		return domain.RejectionError(domain.FailureCodeReferenceMismatch,
+			"%s cannot refer to %s %s", t.kind, reference.kind, reference.externalTransactionID)
+	}
+	if reference.state != StateProcessed {
+		return domain.RejectionError(domain.FailureCodeReferenceNotProcessed,
+			"reference %s is %s, not %s", reference.externalTransactionID, reference.state, StateProcessed)
+	}
+	if reference.walletID != t.walletID || reference.playerID != t.playerID ||
+		reference.amount.Currency() != t.amount.Currency() || reference.roundID != t.roundID {
+		return domain.RejectionError(domain.FailureCodeReferenceMismatch,
+			"reference %s belongs to another player, wallet, currency or round", reference.externalTransactionID)
+	}
+	if t.kind.IsReversal() && !reference.amount.Equal(t.amount) {
+		return domain.RejectionError(domain.FailureCodeReferenceAmountMismatch,
+			"%s of %s must reverse the whole %s, not %s", t.kind, reference.externalTransactionID, reference.amount, t.amount)
+	}
+	t.referenceTransactionID = reference.id
 	return nil
+}
+
+var referableKinds = map[Kind][]Kind{
+	KindWin:      {KindBet},
+	KindRefund:   {KindBet},
+	KindRollback: {KindBet, KindWin, KindRefund},
 }
 
 func (t *Transaction) transitionTo(target State) error {
@@ -363,10 +400,4 @@ func (t *Transaction) ResultBalance() (money.Money, bool) {
 		return money.Money{}, false
 	}
 	return *t.resultBalance, true
-}
-
-// MovesBalance reports whether the kind changes the wallet balance. LOSS does
-// not.
-func (t *Transaction) MovesBalance() bool {
-	return t.kind != KindLoss
 }

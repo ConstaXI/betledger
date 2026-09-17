@@ -91,6 +91,31 @@ func TestSchemaEnforcesFinancialInvariants(t *testing.T) {
 			wantCode: checkViolation,
 		},
 		{
+			name: "should return unique_violation when an operation is reversed twice",
+			sql: `INSERT INTO wager_transactions
+				(id, kind, state, wallet_id, player_id, currency, amount_minor, provider_id, external_transaction_id,
+				 idempotency_key, payload_hash, round_id, game_id, reference_external_transaction_id,
+				 reference_transaction_id)
+				VALUES
+				(gen_random_uuid(), 'REFUND', 'PROCESSED', $1, $2, 'BRL', 100, 'provider-a', 'schema-refund',
+				 'schema-refund', 'hash', 'round', 'game', 'schema-bet', $3),
+				(gen_random_uuid(), 'ROLLBACK', 'PROCESSED', $1, $2, 'BRL', 100, 'provider-a', 'schema-rollback',
+				 'schema-rollback', 'hash', 'round', 'game', 'schema-bet', $3)`,
+			args:     []any{w.ID(), w.PlayerID(), openingID},
+			wantCode: uniqueViolation,
+		},
+		{
+			name: "should return check_violation when a processed reversal has no resolved reference",
+			sql: `INSERT INTO wager_transactions
+				(id, kind, state, wallet_id, player_id, currency, amount_minor, provider_id, external_transaction_id,
+				 idempotency_key, payload_hash, round_id, game_id, reference_external_transaction_id)
+				VALUES
+				(gen_random_uuid(), 'REFUND', 'PROCESSED', $1, $2, 'BRL', 100, 'provider-a', 'schema-unresolved',
+				 'schema-unresolved', 'hash', 'round', 'game', 'schema-bet')`,
+			args:     []any{w.ID(), w.PlayerID()},
+			wantCode: checkViolation,
+		},
+		{
 			name:     "should return restrict_violation when an outbox payload is changed",
 			sql:      `UPDATE outbox_events SET payload = '{}' WHERE id = $1`,
 			args:     []any{eventID},

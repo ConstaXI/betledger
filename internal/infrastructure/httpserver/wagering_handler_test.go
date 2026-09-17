@@ -60,6 +60,10 @@ func TestProcessWagerHandler(t *testing.T) {
 	}
 	replayed := processed
 	replayed.IdempotentReplay = true
+	pendingReference := usecase.WagerResult{
+		TransactionID: transactionID,
+		State:         wager.StatePendingReference,
+	}
 	rejected := usecase.WagerResult{
 		TransactionID: transactionID,
 		State:         wager.StateRejected,
@@ -99,6 +103,15 @@ func TestProcessWagerHandler(t *testing.T) {
 			wantState:      "PROCESSED",
 			wantBalance:    &moneyPayload{Amount: "975.00", Currency: "BRL"},
 			wantReplay:     true,
+			wantCalls:      1,
+		},
+		{
+			name:           "should return 202 when the operation waits for its reference",
+			idempotencyKey: "provider-a:transaction-123",
+			body:           validWagerBody,
+			result:         pendingReference,
+			wantStatus:     http.StatusAccepted,
+			wantState:      "PENDING_REFERENCE",
 			wantCalls:      1,
 		},
 		{

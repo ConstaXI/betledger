@@ -11,6 +11,23 @@ import (
 	"github.com/google/uuid"
 )
 
+const existsProcessedReversal = `-- name: ExistsProcessedReversal :one
+SELECT EXISTS (
+    SELECT 1
+    FROM wager_transactions
+    WHERE reference_transaction_id = $1
+      AND kind IN ('REFUND', 'ROLLBACK')
+      AND state = 'PROCESSED'
+)
+`
+
+func (q *Queries) ExistsProcessedReversal(ctx context.Context, referenceTransactionID *uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, existsProcessedReversal, referenceTransactionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertWagerTransaction = `-- name: InsertWagerTransaction :exec
 INSERT INTO wager_transactions (
     id,

@@ -16,6 +16,7 @@ import (
 const (
 	transactionsProviderIdempotencyKey = "wager_transactions_provider_idempotency_key"
 	transactionsProviderExternalID     = "wager_transactions_provider_external_id"
+	transactionsOneReversalPerRef      = "wager_transactions_one_reversal_per_reference"
 )
 
 var _ usecase.TransactionRepository = (*TransactionRepository)(nil)
@@ -29,7 +30,8 @@ func NewTransactionRepository() *TransactionRepository {
 }
 
 // Create inserts the transaction within the transaction carried by ctx. A
-// provider identity already recorded is reported as an idempotency conflict.
+// provider identity already recorded is reported as an idempotency conflict,
+// and a second processed reversal of the same operation as a conflict too.
 func (r *TransactionRepository) Create(ctx context.Context, transaction *wager.Transaction) error {
 	q, err := queries(ctx)
 	if err != nil {
@@ -67,7 +69,23 @@ func (r *TransactionRepository) Create(ctx context.Context, transaction *wager.T
 			"operation %q from provider %s was already recorded",
 			transaction.ExternalTransactionID(), transaction.ProviderID())
 	}
+	if isUniqueViolation(err, transactionsOneReversalPerRef) {
+		return domain.ConflictError(domain.FailureCodeReferenceAlreadyReversed,
+			"reference %q from provider %s was already reversed",
+			transaction.ReferenceExternalTransactionID(), transaction.ProviderID())
+	}
 	return translate(err)
+}
+
+// HasProcessedReversal reports whether the operation already has a processed
+// REFUND or ROLLBACK.
+func (r *TransactionRepository) HasProcessedReversal(ctx context.Context, referenceID domain.ID) (bool, error) {
+	q, err := queries(ctx)
+	if err != nil {
+		return false, err
+	}
+	exists, err := q.ExistsProcessedReversal(ctx, &referenceID)
+	return exists, translate(err)
 }
 
 // FindByIdempotencyKey returns the operation the provider sent with the key.

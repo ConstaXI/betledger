@@ -61,10 +61,10 @@ resultado original mesmo após outras movimentações na carteira.
 **Implementado.** Erros de domínio são classificáveis por classe (`ErrRejected`,
 `ErrValidation`, ...) e por um `FailureCode` estável, ambos via `errors.Is`.
 
-Quando a mesma causa exige códigos diferentes conforme o contexto — saldo
-insuficiente numa aposta versus numa reversão — o domínio sinaliza a causa e a
-camada de aplicação escolhe o código, já que o agregado não conhece o tipo da
-operação.
+Quando a mesma causa exige códigos diferentes conforme o contexto, o erro
+preserva a causa comum: saldo insuficiente é `INSUFFICIENT_FUNDS` numa aposta e
+`INSUFFICIENT_FUNDS_FOR_REVERSAL` numa reversão, e ambos satisfazem
+`errors.Is(err, domain.ErrInsufficientFunds)`.
 
 ## Eventos
 
@@ -127,11 +127,44 @@ Recusas de negócio são **gravadas** como `REJECTED`, com o evento
 recusa devolve a mesma recusa, e não uma nova tentativa que poderia ser aceita
 depois de um crédito.
 
-## Referências pendentes
+## Reversões e referências
 
-**Decidido.** Uma referência pendente expira por número máximo de tentativas, não
-por TTL, o que dispensa relógio no domínio. Esgotadas as tentativas, a operação
-termina como `REJECTED` com `REFERENCE_NOT_FOUND`.
+**Implementado.** A referência é buscada por
+`(providerId, referenceExternalTransactionId)` depois do lock da carteira, e a
+própria transação a confere (`ResolveReference`): o tipo precisa ser referenciável
+(`WIN` e `REFUND` apontam para `BET`; `ROLLBACK` para `BET`, `WIN` ou `REFUND`), o
+estado `PROCESSED`, e jogador, carteira, moeda e rodada iguais; numa reversão, o
+valor também. Divergência é recusa de negócio, gravada como `REJECTED` com um
+código específico (`REFERENCE_MISMATCH`, `REFERENCE_NOT_PROCESSED`,
+`REFERENCE_AMOUNT_MISMATCH`). O `ROLLBACK` move no sentido contrário ao da
+referência: credita um `BET` e debita um `WIN` ou um `REFUND`.
+
+**Uma reversão por operação, de qualquer tipo.** A spec exige que uma referência
+não receba duas reversões bem-sucedidas do mesmo tipo e pede uma política para
+`REFUND` e `ROLLBACK` sobre a mesma aposta. A regra adotada é mais estrita: cada
+operação é revertida no máximo uma vez, seja por `REFUND` ou por `ROLLBACK`. As
+duas devolvem o mesmo débito, então aceitar as duas devolveria a aposta em dobro.
+O que se desfaz é a própria reversão: um `REFUND` pode receber um `ROLLBACK`, que
+debita de volta, e a aposta original continua com sua reversão consumida, sem
+reabrir. A segunda tentativa é `REFERENCE_ALREADY_REVERSED`.
+
+A regra vive em três camadas. O lock da carteira serializa a reversão e a
+checagem de reversão existente, já que referência e reversão são sempre da mesma
+carteira. O caso de uso recusa a segunda reversão como `REJECTED`, auditável. E o
+banco tem um índice único parcial em `reference_transaction_id` para reversões
+`PROCESSED`, além de um `CHECK` que exige a referência resolvida numa reversão
+processada; um teste com várias reversões simultâneas da mesma aposta comprova
+um único crédito, e sem a checagem do caso de uso o índice ainda recusa a
+segunda.
+
+**Referência ausente ou pendente.** Quando a referência não chegou, ou ela mesma
+ainda espera outra referência, a operação é gravada como `PENDING_REFERENCE`, com
+o evento `WagerTransactionPendingReference`, sem mover dinheiro, e o HTTP
+responde `202`. Uma referência que terminou sem sucesso (`REJECTED` ou `FAILED`)
+é definitiva: a operação é recusada com `REFERENCE_NOT_PROCESSED`, em vez de
+esperar. A retomada das pendentes ainda não existe; a decisão já tomada é que
+elas expiram por número máximo de tentativas, não por TTL, o que dispensa relógio
+no domínio, terminando como `REJECTED` com `REFERENCE_NOT_FOUND`.
 
 ## Autenticação e autorização
 
@@ -201,9 +234,10 @@ repetir e o que é definitivo. Falhas internas são registradas no log, mas seus
 detalhes nunca chegam ao cliente.
 
 Em `POST /wagering/transactions`, o status separa os desfechos: `201` para
-operação aplicada agora, `200` para replay de uma aplicada, e `422` para
-`REJECTED` — nova ou replay —, com o corpo do resultado em vez do corpo de erro,
-já que a recusa é um estado persistido com `transactionId`.
+operação aplicada agora, `200` para replay de uma aplicada, `202` para operação
+esperando a referência, e `422` para `REJECTED` — nova ou replay —, com o corpo
+do resultado em vez do corpo de erro, já que a recusa é um estado persistido com
+`transactionId`.
 
 Cada requisição tem um prazo de 5 segundos, abaixo do `WriteTimeout` do servidor.
 Sem ele, uma requisição feita com o banco travado ficava pendurada
@@ -213,8 +247,9 @@ resposta é `503`, que o cliente pode repetir com segurança graças à idempot�
 ## Interpretações adotadas
 
 - `WIN` aceita referência opcional a uma aposta da mesma rodada; `BET` e `LOSS`
-  não aceitam referência. Por ora, `WIN` com referência é recusado com
-  `TRANSACTION_KIND_NOT_ALLOWED`, até existir a resolução de referências.
+  não aceitam referência. Um `WIN` com referência não consome a reversão da
+  aposta.
+- Uma operação não pode referenciar a si mesma; isso é entrada inválida.
 - `LOSS` tem valor zero e só registra o desfecho da rodada: não gera lançamento,
   não muda a versão da carteira e emite apenas `WagerTransactionProcessed`.
 - Saldo inicial zero não cria `OPENING`, lançamento nem eventos, e a carteira
@@ -223,7 +258,7 @@ resposta é `503`, que o cliente pode repetir com segurança graças à idempot�
 
 ## Trabalho não concluído
 
-- **Reversões** contra o estado persistido, incluindo a política que impede
-  `REFUND` e `ROLLBACK` sobre o mesmo débito.
+- **Retomada de `PENDING_REFERENCE`** por um worker com backoff exponencial e
+  expiração por tentativas.
 - **Publicação da outbox** e **inbox**, com SQS em filas FIFO e DLQ.
 - **Reconciliação** e **observabilidade** além dos logs JSON.

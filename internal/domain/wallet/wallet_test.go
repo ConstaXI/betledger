@@ -113,15 +113,16 @@ func TestWalletApply(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		kind         wager.Kind
-		amount       string
-		mutate       func(params *wager.NewExternalParams)
-		wantErr      error
-		wantRejected bool
-		wantEntry    bool
-		wantBalance  money.Money
-		wantVersion  int64
+		name          string
+		kind          wager.Kind
+		amount        string
+		referenceKind wager.Kind
+		mutate        func(params *wager.NewExternalParams)
+		wantErr       error
+		wantRejected  bool
+		wantEntry     bool
+		wantBalance   money.Money
+		wantVersion   int64
 	}{
 		{
 			name:        "should accept when the balance covers the bet",
@@ -198,7 +199,58 @@ func TestWalletApply(t *testing.T) {
 			wantVersion: 1,
 		},
 		{
-			name:        "should return INVALID_INPUT when the operation is a reversal",
+			name:          "should accept when a refund credits the bet back",
+			kind:          wager.KindRefund,
+			amount:        "25.00",
+			referenceKind: wager.KindBet,
+			mutate:        func(*wager.NewExternalParams) {},
+			wantEntry:     true,
+			wantBalance:   domaintest.MustParseMoney(t, "125.00", "BRL"),
+			wantVersion:   2,
+		},
+		{
+			name:          "should accept when a rollback of a bet credits it back",
+			kind:          wager.KindRollback,
+			amount:        "25.00",
+			referenceKind: wager.KindBet,
+			mutate:        func(*wager.NewExternalParams) {},
+			wantEntry:     true,
+			wantBalance:   domaintest.MustParseMoney(t, "125.00", "BRL"),
+			wantVersion:   2,
+		},
+		{
+			name:          "should accept when a rollback of a win debits it",
+			kind:          wager.KindRollback,
+			amount:        "25.00",
+			referenceKind: wager.KindWin,
+			mutate:        func(*wager.NewExternalParams) {},
+			wantEntry:     true,
+			wantBalance:   domaintest.MustParseMoney(t, "75.00", "BRL"),
+			wantVersion:   2,
+		},
+		{
+			name:          "should accept when a rollback of a refund debits it",
+			kind:          wager.KindRollback,
+			amount:        "25.00",
+			referenceKind: wager.KindRefund,
+			mutate:        func(*wager.NewExternalParams) {},
+			wantEntry:     true,
+			wantBalance:   domaintest.MustParseMoney(t, "75.00", "BRL"),
+			wantVersion:   2,
+		},
+		{
+			name:          "should return INSUFFICIENT_FUNDS_FOR_REVERSAL when a rollback exceeds the balance",
+			kind:          wager.KindRollback,
+			amount:        "100.01",
+			referenceKind: wager.KindWin,
+			mutate:        func(*wager.NewExternalParams) {},
+			wantErr:       domain.FailureCodeInsufficientFundsForReversal,
+			wantRejected:  true,
+			wantBalance:   domaintest.MustParseMoney(t, "100.00", "BRL"),
+			wantVersion:   1,
+		},
+		{
+			name:        "should return INVALID_INPUT when a reversal was not resolved",
 			kind:        wager.KindRefund,
 			amount:      "25.00",
 			mutate:      func(*wager.NewExternalParams) {},
@@ -219,8 +271,10 @@ func TestWalletApply(t *testing.T) {
 			test.mutate(&params)
 			operation, err := wager.NewExternal(params)
 			require.NoError(t, err)
+			reference := domaintest.MustProcessedReference(t, w, test.referenceKind, test.amount)
+			domaintest.MustResolveReference(t, operation, reference)
 
-			got, err := w.Apply(operation)
+			got, err := w.Apply(operation, reference)
 
 			assert.ErrorIs(t, err, test.wantErr)
 			assert.Equal(t, test.wantRejected, errors.Is(err, domain.ErrRejected))

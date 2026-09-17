@@ -62,6 +62,9 @@ type TransactionRepository interface {
 	// FindByExternalID returns the operation a provider identified with the
 	// external identifier, and false when there is none.
 	FindByExternalID(ctx context.Context, providerID, externalTransactionID string) (*wager.Transaction, bool, error)
+	// HasProcessedReversal reports whether a REFUND or a ROLLBACK of the
+	// operation was already processed.
+	HasProcessedReversal(ctx context.Context, referenceID domain.ID) (bool, error)
 }
 
 // LedgerRepository persists the append-only wallet ledger. Writes must run

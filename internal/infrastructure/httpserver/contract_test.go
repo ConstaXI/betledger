@@ -48,6 +48,10 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 	}
 	replayed := processed
 	replayed.IdempotentReplay = true
+	pendingReference := usecase.WagerResult{
+		TransactionID: domain.NewID(),
+		State:         wager.StatePendingReference,
+	}
 	rejected := usecase.WagerResult{
 		TransactionID: domain.NewID(),
 		State:         wager.StateRejected,
@@ -141,6 +145,16 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			wagerResult:    replayed,
 			verifier:       trusted,
 			wantStatus:     http.StatusOK,
+		},
+		{
+			name:           "should match the contract when an operation waits for its reference",
+			method:         http.MethodPost,
+			path:           "/wagering/transactions",
+			body:           validWagerBody,
+			idempotencyKey: "provider-a:transaction-123",
+			wagerResult:    pendingReference,
+			verifier:       trusted,
+			wantStatus:     http.StatusAccepted,
 		},
 		{
 			name:           "should match the contract when an operation is rejected",
