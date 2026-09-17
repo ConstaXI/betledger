@@ -9,102 +9,267 @@ import (
 
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/domaintest"
-	"github.com/davibanfi/betledger/internal/domain/ledger"
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
 )
 
-func TestOpenWalletStartsAtVersionOne(t *testing.T) {
+func TestOpen(t *testing.T) {
 	t.Parallel()
 
-	initial := domaintest.MustParseMoney(t, "1000.00", "BRL")
-
-	wallet, err := wallet.Open(domain.NewID(), domain.NewID(), initial)
-
+	id := domain.NewID()
+	playerID := domain.NewID()
+	negative, err := money.ParseSigned("-1.00", "BRL")
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), wallet.Version())
-	assert.Equal(t, initial, wallet.Balance())
-	assert.Equal(t, initial.Currency(), wallet.Currency())
-}
-
-func TestOpeningLedgerEntry(t *testing.T) {
-	t.Parallel()
-
-	initial := domaintest.MustParseMoney(t, "1000.00", "BRL")
-	wallet := domaintest.MustOpenWallet(t, initial)
-
-	entry, err := wallet.OpeningLedgerEntry(domain.NewID())
-
-	require.NoError(t, err)
-	assert.Equal(t, domaintest.MustParseMoney(t, "0.00", "BRL"), entry.BalanceBefore())
-	assert.Equal(t, initial, entry.BalanceAfter())
-	assert.Equal(t, ledger.Credit, entry.Direction())
-	assert.Equal(t, int64(1), wallet.Version(), "opening must not bump the version")
-
-	empty := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "0.00", "BRL"))
-	_, err = empty.OpeningLedgerEntry(domain.NewID())
-	assert.ErrorIs(t, err, domain.FailureCodeInvalidAmount)
-}
-
-func TestWalletDebitAndCredit(t *testing.T) {
-	t.Parallel()
-
-	wallet := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
-
-	entry, err := wallet.Debit(domaintest.MustParseMoney(t, "80.00", "BRL"), domain.NewID())
-
-	require.NoError(t, err)
-	assert.Equal(t, ledger.Debit, entry.Direction())
-	assert.Equal(t, domaintest.MustParseMoney(t, "100.00", "BRL"), entry.BalanceBefore())
-	assert.Equal(t, domaintest.MustParseMoney(t, "20.00", "BRL"), entry.BalanceAfter())
-	assert.Equal(t, domaintest.MustParseMoney(t, "20.00", "BRL"), wallet.Balance())
-	assert.Equal(t, int64(2), wallet.Version())
-
-	_, err = wallet.Credit(domaintest.MustParseMoney(t, "5.00", "BRL"), domain.NewID())
-
-	require.NoError(t, err)
-	assert.Equal(t, domaintest.MustParseMoney(t, "25.00", "BRL"), wallet.Balance())
-	assert.Equal(t, int64(3), wallet.Version())
-}
-
-func TestWalletDebitRejectsNegativeBalance(t *testing.T) {
-	t.Parallel()
-
-	wallet := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
-
-	_, err := wallet.Debit(domaintest.MustParseMoney(t, "100.01", "BRL"), domain.NewID())
-
-	assert.ErrorIs(t, err, domain.ErrInsufficientFunds)
-	assert.ErrorIs(t, err, domain.ErrRejected)
-	assert.ErrorIs(t, err, domain.FailureCodeInsufficientFunds)
-	assert.Equal(t, domaintest.MustParseMoney(t, "100.00", "BRL"), wallet.Balance(), "a rejection must not move the balance")
-	assert.Equal(t, int64(1), wallet.Version(), "a rejection must not bump the version")
-}
-
-func TestWalletMovementValidation(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
-		name    string
-		money   money.Money
-		wantErr error
+		name           string
+		id             domain.ID
+		playerID       domain.ID
+		initialBalance money.Money
+		wantResult     *wallet.Wallet
+		wantErr        error
 	}{
-		{name: "should accept when the movement matches the wallet currency", money: domaintest.MustParseMoney(t, "10.00", "BRL")},
-		{name: "should return CURRENCY_MISMATCH when the movement is in a foreign currency", money: domaintest.MustParseMoney(t, "10.00", "USD"), wantErr: domain.FailureCodeCurrencyMismatch},
-		{name: "should return INVALID_AMOUNT when the movement amount is zero", money: domaintest.MustParseMoney(t, "0.00", "BRL"), wantErr: domain.FailureCodeInvalidAmount},
-		{name: "should return INVALID_INPUT when the movement amount is uninitialized", money: money.Money{}, wantErr: domain.FailureCodeInvalidInput},
+		{
+			name:           "should accept when the initial balance is positive",
+			id:             id,
+			playerID:       playerID,
+			initialBalance: domaintest.MustParseMoney(t, "1000.00", "BRL"),
+			wantResult:     domaintest.MustRehydrateWallet(t, id, playerID, "1000.00", 1),
+		},
+		{
+			name:           "should accept when the initial balance is zero",
+			id:             id,
+			playerID:       playerID,
+			initialBalance: domaintest.MustParseMoney(t, "0.00", "BRL"),
+			wantResult:     domaintest.MustRehydrateWallet(t, id, playerID, "0.00", 1),
+		},
+		{
+			name:           "should return INVALID_AMOUNT when the initial balance is negative",
+			id:             id,
+			playerID:       playerID,
+			initialBalance: negative,
+			wantErr:        domain.FailureCodeInvalidAmount,
+		},
+		{
+			name:     "should return INVALID_INPUT when the initial balance is uninitialized",
+			id:       id,
+			playerID: playerID,
+			wantErr:  domain.FailureCodeInvalidInput,
+		},
+		{
+			name:           "should return INVALID_INPUT when the wallet id is nil",
+			id:             domain.NilID,
+			playerID:       playerID,
+			initialBalance: domaintest.MustParseMoney(t, "1000.00", "BRL"),
+			wantErr:        domain.FailureCodeInvalidInput,
+		},
+		{
+			name:           "should return INVALID_INPUT when the player id is nil",
+			id:             id,
+			playerID:       domain.NilID,
+			initialBalance: domaintest.MustParseMoney(t, "1000.00", "BRL"),
+			wantErr:        domain.FailureCodeInvalidInput,
+		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			wallet := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
-
-			_, err := wallet.Credit(test.money, domain.NewID())
+			got, err := wallet.Open(test.id, test.playerID, test.initialBalance)
 
 			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantResult, got)
+		})
+	}
+}
+
+func TestWalletOpeningLedgerEntry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		initialBalance string
+		transactionID  domain.ID
+		wantErr        error
+		wantEntry      bool
+	}{
+		{
+			name:           "should accept when the opening has a positive balance",
+			initialBalance: "1000.00",
+			transactionID:  domain.NewID(),
+			wantEntry:      true,
+		},
+		{
+			name:           "should return INVALID_AMOUNT when the opening has a zero balance",
+			initialBalance: "0.00",
+			transactionID:  domain.NewID(),
+			wantErr:        domain.FailureCodeInvalidAmount,
+		},
+		{
+			name:           "should return INVALID_INPUT when the transaction id is nil",
+			initialBalance: "1000.00",
+			transactionID:  domain.NilID,
+			wantErr:        domain.FailureCodeInvalidInput,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			initial := domaintest.MustParseMoney(t, test.initialBalance, "BRL")
+			w := domaintest.MustOpenWallet(t, initial)
+
+			got, err := w.OpeningLedgerEntry(test.transactionID)
+
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantEntry, got != nil)
+			assert.Equal(t, initial, w.Balance(), "the opening entry never moves the balance again")
+			assert.Equal(t, int64(1), w.Version(), "the opening entry never bumps the version")
+		})
+	}
+}
+
+func TestWalletCredit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		amount        money.Money
+		transactionID domain.ID
+		wantErr       error
+		wantEntry     bool
+		wantBalance   money.Money
+		wantVersion   int64
+	}{
+		{
+			name:          "should accept when the credit matches the wallet currency",
+			amount:        domaintest.MustParseMoney(t, "5.00", "BRL"),
+			transactionID: domain.NewID(),
+			wantEntry:     true,
+			wantBalance:   domaintest.MustParseMoney(t, "105.00", "BRL"),
+			wantVersion:   2,
+		},
+		{
+			name:          "should return CURRENCY_MISMATCH when the credit is in a foreign currency",
+			amount:        domaintest.MustParseMoney(t, "5.00", "USD"),
+			transactionID: domain.NewID(),
+			wantErr:       domain.FailureCodeCurrencyMismatch,
+			wantBalance:   domaintest.MustParseMoney(t, "100.00", "BRL"),
+			wantVersion:   1,
+		},
+		{
+			name:          "should return INVALID_AMOUNT when the credit is zero",
+			amount:        domaintest.MustParseMoney(t, "0.00", "BRL"),
+			transactionID: domain.NewID(),
+			wantErr:       domain.FailureCodeInvalidAmount,
+			wantBalance:   domaintest.MustParseMoney(t, "100.00", "BRL"),
+			wantVersion:   1,
+		},
+		{
+			name:          "should return INVALID_INPUT when the credit is uninitialized",
+			transactionID: domain.NewID(),
+			wantErr:       domain.FailureCodeInvalidInput,
+			wantBalance:   domaintest.MustParseMoney(t, "100.00", "BRL"),
+			wantVersion:   1,
+		},
+		{
+			name:        "should return INVALID_INPUT when the transaction id is nil",
+			amount:      domaintest.MustParseMoney(t, "5.00", "BRL"),
+			wantErr:     domain.FailureCodeInvalidInput,
+			wantBalance: domaintest.MustParseMoney(t, "100.00", "BRL"),
+			wantVersion: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
+
+			got, err := w.Credit(test.amount, test.transactionID)
+
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantEntry, got != nil)
+			assert.Equal(t, test.wantBalance, w.Balance())
+			assert.Equal(t, test.wantVersion, w.Version())
+		})
+	}
+}
+
+func TestWalletDebit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		amount                money.Money
+		transactionID         domain.ID
+		wantErr               error
+		wantInsufficientFunds bool
+		wantEntry             bool
+		wantBalance           money.Money
+		wantVersion           int64
+	}{
+		{
+			name:          "should accept when the balance covers the debit",
+			amount:        domaintest.MustParseMoney(t, "80.00", "BRL"),
+			transactionID: domain.NewID(),
+			wantEntry:     true,
+			wantBalance:   domaintest.MustParseMoney(t, "20.00", "BRL"),
+			wantVersion:   2,
+		},
+		{
+			name:          "should accept when the debit takes the whole balance",
+			amount:        domaintest.MustParseMoney(t, "100.00", "BRL"),
+			transactionID: domain.NewID(),
+			wantEntry:     true,
+			wantBalance:   domaintest.MustParseMoney(t, "0.00", "BRL"),
+			wantVersion:   2,
+		},
+		{
+			name:                  "should return INSUFFICIENT_FUNDS when the debit exceeds the balance",
+			amount:                domaintest.MustParseMoney(t, "100.01", "BRL"),
+			transactionID:         domain.NewID(),
+			wantErr:               domain.FailureCodeInsufficientFunds,
+			wantInsufficientFunds: true,
+			wantBalance:           domaintest.MustParseMoney(t, "100.00", "BRL"),
+			wantVersion:           1,
+		},
+		{
+			name:          "should return CURRENCY_MISMATCH when the debit is in a foreign currency",
+			amount:        domaintest.MustParseMoney(t, "5.00", "USD"),
+			transactionID: domain.NewID(),
+			wantErr:       domain.FailureCodeCurrencyMismatch,
+			wantBalance:   domaintest.MustParseMoney(t, "100.00", "BRL"),
+			wantVersion:   1,
+		},
+		{
+			name:          "should return INVALID_AMOUNT when the debit is zero",
+			amount:        domaintest.MustParseMoney(t, "0.00", "BRL"),
+			transactionID: domain.NewID(),
+			wantErr:       domain.FailureCodeInvalidAmount,
+			wantBalance:   domaintest.MustParseMoney(t, "100.00", "BRL"),
+			wantVersion:   1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
+
+			got, err := w.Debit(test.amount, test.transactionID)
+
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantInsufficientFunds, errors.Is(err, domain.ErrInsufficientFunds))
+			assert.Equal(t, test.wantInsufficientFunds, errors.Is(err, domain.ErrRejected))
+			assert.Equal(t, test.wantEntry, got != nil)
+			assert.Equal(t, test.wantBalance, w.Balance())
+			assert.Equal(t, test.wantVersion, w.Version())
 		})
 	}
 }
@@ -285,7 +450,7 @@ func TestWalletApply(t *testing.T) {
 	}
 }
 
-func TestRehydrateWallet(t *testing.T) {
+func TestRehydrate(t *testing.T) {
 	t.Parallel()
 
 	balance := domaintest.MustParseMoney(t, "10.00", "BRL")
@@ -313,9 +478,10 @@ func TestRehydrateWallet(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := wallet.Rehydrate(test.id, test.playerID, test.balance, test.version)
+			got, err := wallet.Rehydrate(test.id, test.playerID, test.balance, test.version)
 
 			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantErr == nil, got != nil)
 		})
 	}
 }

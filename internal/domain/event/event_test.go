@@ -5,58 +5,103 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
-	"github.com/davibanfi/betledger/internal/domain"
-	"github.com/davibanfi/betledger/internal/domain/domaintest"
 	"github.com/davibanfi/betledger/internal/domain/event"
-	"github.com/davibanfi/betledger/internal/domain/wager"
 )
 
 func TestEventMarshalJSON(t *testing.T) {
 	t.Parallel()
 
-	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	envelope := event.Event{
+		ID:            uuid.MustParse("0192f298-345e-7e38-af88-e43f851a819d"),
+		Type:          event.TypeWalletBalanceChanged,
+		AggregateID:   uuid.MustParse("0192f291-27dd-7d3f-8071-5f8685deef37"),
+		CorrelationID: "correlation-1",
+		OccurredAt:    time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC),
+		Version:       1,
+		Data:          map[string]string{"walletId": "0192f291-27dd-7d3f-8071-5f8685deef37"},
+	}
 
-	w := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
-	entry, err := w.Debit(domaintest.MustParseMoney(t, "25.00", "BRL"), domain.NewID())
-	require.NoError(t, err)
+	tests := []struct {
+		name       string
+		event      event.Event
+		wantResult string
+	}{
+		{
+			name:  "should format when the event has no causation",
+			event: envelope,
+			wantResult: `{"eventId":"0192f298-345e-7e38-af88-e43f851a819d","eventType":"WalletBalanceChanged",
+				"aggregateId":"0192f291-27dd-7d3f-8071-5f8685deef37","correlationId":"correlation-1",
+				"occurredAt":"2026-09-08T12:00:00Z","version":1,
+				"data":{"walletId":"0192f291-27dd-7d3f-8071-5f8685deef37"}}`,
+		},
+		{
+			name:  "should format when the event carries a causation",
+			event: envelope.WithCausation("msg-123"),
+			wantResult: `{"eventId":"0192f298-345e-7e38-af88-e43f851a819d","eventType":"WalletBalanceChanged",
+				"aggregateId":"0192f291-27dd-7d3f-8071-5f8685deef37","correlationId":"correlation-1",
+				"causationId":"msg-123","occurredAt":"2026-09-08T12:00:00Z","version":1,
+				"data":{"walletId":"0192f291-27dd-7d3f-8071-5f8685deef37"}}`,
+		},
+	}
 
-	e, err := event.NewWalletBalanceChanged(w, entry, "correlation-1", occurredAt)
-	require.NoError(t, err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	encoded, err := json.Marshal(e)
-	require.NoError(t, err)
+			got, err := json.Marshal(test.event)
 
-	var decoded map[string]any
-	require.NoError(t, json.Unmarshal(encoded, &decoded))
-
-	assert.Equal(t, "WalletBalanceChanged", decoded["eventType"])
-	assert.Equal(t, "2026-09-08T12:00:00Z", decoded["occurredAt"])
-	assert.Equal(t, "correlation-1", decoded["correlationId"])
-	assert.Equal(t, float64(1), decoded["version"])
-	assert.NotContains(t, decoded, "causationId", "causationId must be omitted when absent")
-
-	data, ok := decoded["data"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, map[string]any{"amount": "25.00", "currency": "BRL"}, data["money"])
-	assert.Equal(t, map[string]any{"amount": "75.00", "currency": "BRL"}, data["balanceAfter"])
+			assert.NoError(t, err)
+			assert.JSONEq(t, test.wantResult, string(got))
+		})
+	}
 }
 
-func TestEventWithCausationDoesNotMutate(t *testing.T) {
+func TestEventWithCausation(t *testing.T) {
 	t.Parallel()
 
-	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	envelope := event.Event{
+		ID:            uuid.MustParse("0192f298-345e-7e38-af88-e43f851a819d"),
+		Type:          event.TypeWagerTransactionProcessed,
+		AggregateID:   uuid.MustParse("0192f291-27dd-7d3f-8071-5f8685deef37"),
+		CorrelationID: "correlation-1",
+		OccurredAt:    time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC),
+		Version:       1,
+	}
+	caused := envelope
+	caused.CausationID = "msg-123"
+	recaused := envelope
+	recaused.CausationID = "msg-456"
 
-	processed := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
-	require.NoError(t, processed.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL")))
-	e, err := event.NewWagerTransactionProcessed(processed, "correlation-1", occurredAt)
-	require.NoError(t, err)
+	tests := []struct {
+		name        string
+		event       event.Event
+		causationID string
+		wantResult  event.Event
+	}{
+		{
+			name:        "should accept when the event has no causation yet",
+			event:       envelope,
+			causationID: "msg-123",
+			wantResult:  caused,
+		},
+		{
+			name:        "should accept when the event already points at another message",
+			event:       caused,
+			causationID: "msg-456",
+			wantResult:  recaused,
+		},
+	}
 
-	caused := e.WithCausation("msg-123")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	assert.Equal(t, "msg-123", caused.CausationID)
-	assert.Empty(t, e.CausationID, "the original event must stay an immutable snapshot")
-	assert.Equal(t, e.ID, caused.ID)
+			got := test.event.WithCausation(test.causationID)
+
+			assert.Equal(t, test.wantResult, got)
+		})
+	}
 }

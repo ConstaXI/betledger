@@ -9,6 +9,7 @@ import (
 
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/domaintest"
+	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 )
 
@@ -144,54 +145,350 @@ func TestNewExternalTransaction(t *testing.T) {
 	}
 }
 
-func TestTransactionStateMachine(t *testing.T) {
+func TestNewOpening(t *testing.T) {
 	t.Parallel()
 
-	transaction := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
-	assert.Equal(t, wager.StatePending, transaction.State())
-
-	require.NoError(t, transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL")))
-
-	balance, ok := transaction.ResultBalance()
-	assert.True(t, ok)
-	assert.Equal(t, domaintest.MustParseMoney(t, "75.00", "BRL"), balance)
-
-	assert.ErrorIs(t, transaction.MarkRejected(domain.FailureCodeInsufficientFunds), domain.FailureCodeInvalidStateTransition)
-	assert.ErrorIs(t, transaction.MarkProcessed(domaintest.MustParseMoney(t, "10.00", "BRL")), domain.FailureCodeInvalidStateTransition)
-}
-
-func TestTransactionRejectionRequiresFailureCode(t *testing.T) {
-	t.Parallel()
-
-	transaction := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
-
-	assert.ErrorIs(t, transaction.MarkRejected(""), domain.FailureCodeInvalidInput)
-
-	require.NoError(t, transaction.MarkRejected(domain.FailureCodeInsufficientFunds))
-	assert.Equal(t, domain.FailureCodeInsufficientFunds, transaction.FailureCode())
-	assert.True(t, transaction.State().IsTerminal())
-}
-
-func TestNewOpeningTransaction(t *testing.T) {
-	t.Parallel()
-
+	id := domain.NewID()
+	walletID := domain.NewID()
+	playerID := domain.NewID()
 	initial := domaintest.MustParseMoney(t, "1000.00", "BRL")
 
-	transaction, err := wager.NewOpening(domain.NewID(), domain.NewID(), domain.NewID(), initial)
+	tests := []struct {
+		name           string
+		id             domain.ID
+		walletID       domain.ID
+		playerID       domain.ID
+		initialBalance money.Money
+		wantResult     *wager.Transaction
+		wantErr        error
+	}{
+		{
+			name:           "should accept when the opening has a positive balance, without provider metadata",
+			id:             id,
+			walletID:       walletID,
+			playerID:       playerID,
+			initialBalance: initial,
+			wantResult: domaintest.MustRehydrateTransaction(t, wager.RehydrateParams{
+				ID:            id,
+				Kind:          wager.KindOpening,
+				State:         wager.StateProcessed,
+				WalletID:      walletID,
+				PlayerID:      playerID,
+				Money:         initial,
+				ResultBalance: &initial,
+			}),
+		},
+		{
+			name:           "should return INVALID_AMOUNT when the opening has a zero balance",
+			id:             id,
+			walletID:       walletID,
+			playerID:       playerID,
+			initialBalance: domaintest.MustParseMoney(t, "0.00", "BRL"),
+			wantErr:        domain.FailureCodeInvalidAmount,
+		},
+		{
+			name:           "should return INVALID_INPUT when the transaction id is nil",
+			id:             domain.NilID,
+			walletID:       walletID,
+			playerID:       playerID,
+			initialBalance: initial,
+			wantErr:        domain.FailureCodeInvalidInput,
+		},
+		{
+			name:           "should return INVALID_INPUT when the wallet id is nil",
+			id:             id,
+			walletID:       domain.NilID,
+			playerID:       playerID,
+			initialBalance: initial,
+			wantErr:        domain.FailureCodeInvalidInput,
+		},
+		{
+			name:           "should return INVALID_INPUT when the player id is nil",
+			id:             id,
+			walletID:       walletID,
+			playerID:       domain.NilID,
+			initialBalance: initial,
+			wantErr:        domain.FailureCodeInvalidInput,
+		},
+	}
 
-	require.NoError(t, err)
-	assert.Equal(t, wager.StateProcessed, transaction.State())
-	assert.False(t, transaction.Kind().IsExternal())
-	assert.Empty(t, transaction.ProviderID())
-	assert.Empty(t, transaction.ExternalTransactionID())
-	assert.Empty(t, transaction.IdempotencyKey())
-	assert.Empty(t, transaction.PayloadHash())
-	assert.Empty(t, transaction.RoundID())
-	assert.Empty(t, transaction.GameID())
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	zero := domaintest.MustParseMoney(t, "0.00", "BRL")
-	_, err = wager.NewOpening(domain.NewID(), domain.NewID(), domain.NewID(), zero)
-	assert.ErrorIs(t, err, domain.FailureCodeInvalidAmount)
+			got, err := wager.NewOpening(test.id, test.walletID, test.playerID, test.initialBalance)
+
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantResult, got)
+		})
+	}
+}
+
+func TestTransactionMarkProcessed(t *testing.T) {
+	t.Parallel()
+
+	pending := func(*wager.Transaction) error { return nil }
+	processed := func(transaction *wager.Transaction) error {
+		return transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"))
+	}
+	rejected := func(transaction *wager.Transaction) error {
+		return transaction.MarkRejected(domain.FailureCodeInsufficientFunds)
+	}
+	waiting := func(transaction *wager.Transaction) error { return transaction.MarkPendingReference() }
+
+	tests := []struct {
+		name              string
+		kind              wager.Kind
+		prepare           func(transaction *wager.Transaction) error
+		balance           money.Money
+		wantErr           error
+		wantState         wager.State
+		wantResultBalance money.Money
+		wantHasBalance    bool
+	}{
+		{
+			name:              "should accept when the operation is pending",
+			kind:              wager.KindBet,
+			prepare:           pending,
+			balance:           domaintest.MustParseMoney(t, "50.00", "BRL"),
+			wantState:         wager.StateProcessed,
+			wantResultBalance: domaintest.MustParseMoney(t, "50.00", "BRL"),
+			wantHasBalance:    true,
+		},
+		{
+			name:              "should accept when the operation waited for its reference",
+			kind:              wager.KindRefund,
+			prepare:           waiting,
+			balance:           domaintest.MustParseMoney(t, "125.00", "BRL"),
+			wantState:         wager.StateProcessed,
+			wantResultBalance: domaintest.MustParseMoney(t, "125.00", "BRL"),
+			wantHasBalance:    true,
+		},
+		{
+			name:              "should return INVALID_STATE_TRANSITION when the operation was already processed",
+			kind:              wager.KindBet,
+			prepare:           processed,
+			balance:           domaintest.MustParseMoney(t, "10.00", "BRL"),
+			wantErr:           domain.FailureCodeInvalidStateTransition,
+			wantState:         wager.StateProcessed,
+			wantResultBalance: domaintest.MustParseMoney(t, "75.00", "BRL"),
+			wantHasBalance:    true,
+		},
+		{
+			name:      "should return INVALID_STATE_TRANSITION when the operation was rejected",
+			kind:      wager.KindBet,
+			prepare:   rejected,
+			balance:   domaintest.MustParseMoney(t, "10.00", "BRL"),
+			wantErr:   domain.FailureCodeInvalidStateTransition,
+			wantState: wager.StateRejected,
+		},
+		{
+			name:      "should return CURRENCY_MISMATCH when the balance is in another currency",
+			kind:      wager.KindBet,
+			prepare:   pending,
+			balance:   domaintest.MustParseMoney(t, "50.00", "USD"),
+			wantErr:   domain.FailureCodeCurrencyMismatch,
+			wantState: wager.StatePending,
+		},
+		{
+			name:      "should return INVALID_INPUT when the balance is uninitialized",
+			kind:      wager.KindBet,
+			prepare:   pending,
+			wantErr:   domain.FailureCodeInvalidInput,
+			wantState: wager.StatePending,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			transaction := domaintest.MustExternalTransaction(t, test.kind, "25.00")
+			require.NoError(t, test.prepare(transaction))
+
+			err := transaction.MarkProcessed(test.balance)
+
+			balance, hasBalance := transaction.ResultBalance()
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantState, transaction.State())
+			assert.Equal(t, test.wantResultBalance, balance)
+			assert.Equal(t, test.wantHasBalance, hasBalance)
+		})
+	}
+}
+
+func TestTransactionMarkRejected(t *testing.T) {
+	t.Parallel()
+
+	pending := func(*wager.Transaction) error { return nil }
+	processed := func(transaction *wager.Transaction) error {
+		return transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"))
+	}
+	waiting := func(transaction *wager.Transaction) error { return transaction.MarkPendingReference() }
+
+	tests := []struct {
+		name            string
+		kind            wager.Kind
+		prepare         func(transaction *wager.Transaction) error
+		code            domain.FailureCode
+		wantErr         error
+		wantState       wager.State
+		wantFailureCode domain.FailureCode
+	}{
+		{
+			name:            "should accept when the operation is pending",
+			kind:            wager.KindBet,
+			prepare:         pending,
+			code:            domain.FailureCodeInsufficientFunds,
+			wantState:       wager.StateRejected,
+			wantFailureCode: domain.FailureCodeInsufficientFunds,
+		},
+		{
+			name:            "should accept when the operation waited for its reference",
+			kind:            wager.KindRefund,
+			prepare:         waiting,
+			code:            domain.FailureCodeReferenceNotFound,
+			wantState:       wager.StateRejected,
+			wantFailureCode: domain.FailureCodeReferenceNotFound,
+		},
+		{
+			name:      "should return INVALID_INPUT when the failure code is empty",
+			kind:      wager.KindBet,
+			prepare:   pending,
+			wantErr:   domain.FailureCodeInvalidInput,
+			wantState: wager.StatePending,
+		},
+		{
+			name:      "should return INVALID_STATE_TRANSITION when the operation was already processed",
+			kind:      wager.KindBet,
+			prepare:   processed,
+			code:      domain.FailureCodeInsufficientFunds,
+			wantErr:   domain.FailureCodeInvalidStateTransition,
+			wantState: wager.StateProcessed,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			transaction := domaintest.MustExternalTransaction(t, test.kind, "25.00")
+			require.NoError(t, test.prepare(transaction))
+
+			err := transaction.MarkRejected(test.code)
+
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantState, transaction.State())
+			assert.Equal(t, test.wantFailureCode, transaction.FailureCode())
+		})
+	}
+}
+
+func TestTransactionMarkFailed(t *testing.T) {
+	t.Parallel()
+
+	pending := func(*wager.Transaction) error { return nil }
+	rejected := func(transaction *wager.Transaction) error {
+		return transaction.MarkRejected(domain.FailureCodeInsufficientFunds)
+	}
+
+	tests := []struct {
+		name            string
+		prepare         func(transaction *wager.Transaction) error
+		code            domain.FailureCode
+		wantErr         error
+		wantState       wager.State
+		wantFailureCode domain.FailureCode
+	}{
+		{
+			name:            "should accept when the operation is pending",
+			prepare:         pending,
+			code:            domain.FailureCodeReferenceNotFound,
+			wantState:       wager.StateFailed,
+			wantFailureCode: domain.FailureCodeReferenceNotFound,
+		},
+		{
+			name:      "should return INVALID_INPUT when the failure code is empty",
+			prepare:   pending,
+			wantErr:   domain.FailureCodeInvalidInput,
+			wantState: wager.StatePending,
+		},
+		{
+			name:            "should return INVALID_STATE_TRANSITION when the operation was rejected",
+			prepare:         rejected,
+			code:            domain.FailureCodeReferenceNotFound,
+			wantErr:         domain.FailureCodeInvalidStateTransition,
+			wantState:       wager.StateRejected,
+			wantFailureCode: domain.FailureCodeInsufficientFunds,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			transaction := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
+			require.NoError(t, test.prepare(transaction))
+
+			err := transaction.MarkFailed(test.code)
+
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantState, transaction.State())
+			assert.Equal(t, test.wantFailureCode, transaction.FailureCode())
+		})
+	}
+}
+
+func TestTransactionMarkPendingReference(t *testing.T) {
+	t.Parallel()
+
+	pending := func(*wager.Transaction) error { return nil }
+	processed := func(transaction *wager.Transaction) error {
+		return transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"))
+	}
+
+	tests := []struct {
+		name      string
+		kind      wager.Kind
+		prepare   func(transaction *wager.Transaction) error
+		wantErr   error
+		wantState wager.State
+	}{
+		{
+			name:      "should accept when a pending reversal waits for its reference",
+			kind:      wager.KindRefund,
+			prepare:   pending,
+			wantState: wager.StatePendingReference,
+		},
+		{
+			name:      "should return INVALID_STATE_TRANSITION when the operation refers to nothing",
+			kind:      wager.KindBet,
+			prepare:   pending,
+			wantErr:   domain.FailureCodeInvalidStateTransition,
+			wantState: wager.StatePending,
+		},
+		{
+			name:      "should return INVALID_STATE_TRANSITION when the reversal was already processed",
+			kind:      wager.KindRefund,
+			prepare:   processed,
+			wantErr:   domain.FailureCodeInvalidStateTransition,
+			wantState: wager.StateProcessed,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			transaction := domaintest.MustExternalTransaction(t, test.kind, "25.00")
+			require.NoError(t, test.prepare(transaction))
+
+			err := transaction.MarkPendingReference()
+
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantState, transaction.State())
+		})
+	}
 }
 
 func TestTransactionStateCanTransitionTo(t *testing.T) {

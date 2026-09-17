@@ -109,3 +109,23 @@ func MustResolveReference(t testing.TB, operation, reference *wager.Transaction)
 	}
 	require.NoError(t, operation.ResolveReference(reference))
 }
+
+// MustRehydrateWallet rebuilds a wallet with the given state, failing the test
+// otherwise.
+func MustRehydrateWallet(t testing.TB, id, playerID domain.ID, balance string, version int64) *wallet.Wallet {
+	t.Helper()
+
+	rehydrated, err := wallet.Rehydrate(id, playerID, MustParseMoney(t, balance, "BRL"), version)
+	require.NoError(t, err)
+	return rehydrated
+}
+
+// MustRehydrateTransaction rebuilds an operation with the given state, failing
+// the test otherwise.
+func MustRehydrateTransaction(t testing.TB, params wager.RehydrateParams) *wager.Transaction {
+	t.Helper()
+
+	rehydrated, err := wager.Rehydrate(params)
+	require.NoError(t, err)
+	return rehydrated
+}

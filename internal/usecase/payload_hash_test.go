@@ -3,6 +3,7 @@ package usecase_test
 import (
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -19,8 +20,8 @@ func TestPayloadHash(t *testing.T) {
 		ProviderID:            "provider-a",
 		ExternalTransactionID: "transaction-123",
 		IdempotencyKey:        "provider-a:transaction-123",
-		PlayerID:              domain.NewID(),
-		WalletID:              domain.NewID(),
+		PlayerID:              uuid.MustParse("0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1"),
+		WalletID:              uuid.MustParse("0192f291-27dd-7d3f-8071-5f8685deef37"),
 		RoundID:               "round-987",
 		GameID:                "fortune-chimp",
 		Kind:                  wager.KindBet,
@@ -29,6 +30,8 @@ func TestPayloadHash(t *testing.T) {
 	}
 	baseHash, err := usecase.PayloadHash(base)
 	require.NoError(t, err)
+	require.Equal(t, "629836932b79106b99523d06a1e7fa80689b0ea1e1c47aa3f0a5a2c87d0c4344", baseHash,
+		"the documented hash of the base operation, computed independently, must not change")
 	equivalentAmount, err := money.Parse("25", "BRL")
 	require.NoError(t, err)
 
@@ -87,25 +90,4 @@ func TestPayloadHash(t *testing.T) {
 			assert.Equal(t, test.wantSame, got == baseHash)
 		})
 	}
-}
-
-func TestPayloadHashIsStable(t *testing.T) {
-	t.Parallel()
-
-	input := usecase.ProcessWagerInput{
-		ProviderID:            "provider-a",
-		ExternalTransactionID: "transaction-123",
-		IdempotencyKey:        "provider-a:transaction-123",
-		PlayerID:              domain.ID{0x01, 0x92, 0xf2, 0x8f, 0x5d, 0xc0, 0x7d, 0x58, 0xbd, 0xb2, 0x81, 0x4a, 0xd6, 0xa0, 0xf4, 0xa1},
-		WalletID:              domain.ID{0x01, 0x92, 0xf2, 0x91, 0x27, 0xdd, 0x7d, 0x3f, 0x80, 0x71, 0x5f, 0x86, 0x85, 0xde, 0xef, 0x37},
-		RoundID:               "round-987",
-		GameID:                "fortune-chimp",
-		Kind:                  wager.KindBet,
-		Money:                 money.MustNew(2500, money.MustCurrency("BRL")),
-	}
-
-	got, err := usecase.PayloadHash(input)
-
-	require.NoError(t, err)
-	assert.Equal(t, "629836932b79106b99523d06a1e7fa80689b0ea1e1c47aa3f0a5a2c87d0c4344", got)
 }

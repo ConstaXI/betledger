@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/event"
@@ -76,7 +75,7 @@ func TestOpenWalletExecute(t *testing.T) {
 			wantCalls: 0,
 		},
 		{
-			name:      "should persist nothing when the outbox is unavailable",
+			name:      "should return ErrUnavailable when the outbox is unavailable",
 			input:     usecase.OpenWalletInput{PlayerID: domain.NewID(), InitialBalance: money.MustNew(100000, brl), CorrelationID: "req-1"},
 			outboxErr: usecase.ErrUnavailable,
 			wantErr:   usecase.ErrUnavailable,
@@ -92,55 +91,36 @@ func TestOpenWalletExecute(t *testing.T) {
 			uc := usecase.NewOpenWallet(transactor, fakeWallets{err: test.walletErr}, fakeTransactions{},
 				fakeLedger{}, fakeOutbox{err: test.outboxErr}, func() time.Time { return fixedNow })
 
-			_, err := uc.Execute(context.Background(), test.input)
+			got, err := uc.Execute(context.Background(), test.input)
 
 			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantErr == nil, got != nil)
 			assert.Equal(t, test.wantCalls, transactor.calls)
 			assert.Len(t, transactor.committed.wallets, test.wantWallets)
 			assert.Len(t, transactor.committed.transactions, test.wantTransactions)
 			assert.Len(t, transactor.committed.entries, test.wantEntries)
 			assert.Equal(t, test.wantEventTypes, transactor.committed.eventTypes)
+			for _, w := range transactor.committed.wallets {
+				assert.Equal(t, test.input.PlayerID, w.PlayerID())
+				assert.Equal(t, test.input.InitialBalance, w.Balance())
+				assert.Equal(t, int64(1), w.Version())
+			}
+			for _, transaction := range transactor.committed.transactions {
+				assert.Equal(t, wager.KindOpening, transaction.Kind())
+				assert.Equal(t, wager.StateProcessed, transaction.State())
+				assert.Contains(t, transactor.committed.wallets, transaction.WalletID())
+			}
+			for _, entry := range transactor.committed.entries {
+				assert.Equal(t, transactor.committed.transactions[0].ID(), entry.TransactionID())
+				assert.Equal(t, ledger.Credit, entry.Direction())
+				assert.Equal(t, money.MustNew(0, brl), entry.BalanceBefore())
+				assert.Equal(t, test.input.InitialBalance, entry.BalanceAfter())
+			}
+			for _, e := range transactor.committed.events {
+				assert.Contains(t, transactor.committed.wallets, e.AggregateID)
+				assert.Equal(t, test.input.CorrelationID, e.CorrelationID)
+				assert.Equal(t, fixedNow, e.OccurredAt)
+			}
 		})
-	}
-}
-
-func TestOpenWalletRecordsConsistentOpening(t *testing.T) {
-	t.Parallel()
-
-	brl := money.MustCurrency("BRL")
-	initial := money.MustNew(100000, brl)
-	playerID := domain.NewID()
-	transactor := newFakeTransactor()
-	uc := usecase.NewOpenWallet(transactor, fakeWallets{}, fakeTransactions{}, fakeLedger{}, fakeOutbox{},
-		func() time.Time { return fixedNow })
-
-	w, err := uc.Execute(context.Background(), usecase.OpenWalletInput{PlayerID: playerID, InitialBalance: initial, CorrelationID: "req-1"})
-
-	require.NoError(t, err)
-	require.Len(t, transactor.committed.wallets, 1)
-	require.Len(t, transactor.committed.transactions, 1)
-	require.Len(t, transactor.committed.entries, 1)
-	require.Len(t, transactor.committed.events, 2)
-
-	assert.Equal(t, w.Balance(), transactor.committed.wallets[w.ID()].Balance())
-	assert.Equal(t, playerID, w.PlayerID())
-	assert.Equal(t, initial, w.Balance())
-	assert.Equal(t, int64(1), w.Version())
-
-	transaction := transactor.committed.transactions[0]
-	assert.Equal(t, wager.KindOpening, transaction.Kind())
-	assert.Equal(t, wager.StateProcessed, transaction.State())
-	assert.Equal(t, w.ID(), transaction.WalletID())
-
-	entry := transactor.committed.entries[0]
-	assert.Equal(t, transaction.ID(), entry.TransactionID())
-	assert.Equal(t, ledger.Credit, entry.Direction())
-	assert.Equal(t, money.MustNew(0, brl), entry.BalanceBefore())
-	assert.Equal(t, initial, entry.BalanceAfter())
-
-	for _, e := range transactor.committed.events {
-		assert.Equal(t, w.ID(), e.AggregateID)
-		assert.Equal(t, "req-1", e.CorrelationID)
-		assert.Equal(t, fixedNow, e.OccurredAt)
 	}
 }

@@ -70,6 +70,23 @@ func TestProcessWagerHandler(t *testing.T) {
 		FailureCode:   domain.FailureCodeInsufficientFunds,
 	}
 
+	validInput := usecase.ProcessWagerInput{
+		ProviderID:            "provider-a",
+		ExternalTransactionID: "transaction-123",
+		IdempotencyKey:        "provider-a:transaction-123",
+		PlayerID:              uuid.MustParse("0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1"),
+		WalletID:              uuid.MustParse("0192f291-27dd-7d3f-8071-5f8685deef37"),
+		RoundID:               "round-987",
+		GameID:                "fortune-chimp",
+		Kind:                  wager.KindBet,
+		Money:                 money.MustNew(2500, brl),
+		CorrelationID:         "req-42",
+	}
+	normalizedWin := validInput
+	normalizedWin.Kind = wager.KindWin
+	normalizedWin.Money = money.MustNew(2550, brl)
+	normalizedWin.IdempotencyKey = "custom-key"
+
 	tests := []struct {
 		name            string
 		idempotencyKey  string
@@ -83,7 +100,20 @@ func TestProcessWagerHandler(t *testing.T) {
 		wantFailureCode string
 		wantReplay      bool
 		wantCalls       int
+		wantInput       usecase.ProcessWagerInput
 	}{
+		{
+			name:           "should normalize when the amount has fewer decimals and the key is not derived",
+			idempotencyKey: "custom-key",
+			body: strings.Replace(validWagerBody, `"kind":"BET","money":{"amount":"25.00"`,
+				`"kind":"WIN","money":{"amount":"25.5"`, 1),
+			result:      processed,
+			wantStatus:  http.StatusCreated,
+			wantState:   "PROCESSED",
+			wantBalance: &moneyPayload{Amount: "975.00", Currency: "BRL"},
+			wantCalls:   1,
+			wantInput:   normalizedWin,
+		},
 		{
 			name:           "should return 201 when the operation is applied",
 			idempotencyKey: "provider-a:transaction-123",
@@ -93,6 +123,7 @@ func TestProcessWagerHandler(t *testing.T) {
 			wantState:      "PROCESSED",
 			wantBalance:    &moneyPayload{Amount: "975.00", Currency: "BRL"},
 			wantCalls:      1,
+			wantInput:      validInput,
 		},
 		{
 			name:           "should return 200 when the operation is a replay",
@@ -104,6 +135,7 @@ func TestProcessWagerHandler(t *testing.T) {
 			wantBalance:    &moneyPayload{Amount: "975.00", Currency: "BRL"},
 			wantReplay:     true,
 			wantCalls:      1,
+			wantInput:      validInput,
 		},
 		{
 			name:           "should return 202 when the operation waits for its reference",
@@ -113,6 +145,7 @@ func TestProcessWagerHandler(t *testing.T) {
 			wantStatus:     http.StatusAccepted,
 			wantState:      "PENDING_REFERENCE",
 			wantCalls:      1,
+			wantInput:      validInput,
 		},
 		{
 			name:            "should return 422 INSUFFICIENT_FUNDS when the operation is rejected",
@@ -123,6 +156,7 @@ func TestProcessWagerHandler(t *testing.T) {
 			wantState:       "REJECTED",
 			wantFailureCode: "INSUFFICIENT_FUNDS",
 			wantCalls:       1,
+			wantInput:       validInput,
 		},
 		{
 			name:           "should return 403 FORBIDDEN when the body names another provider",
@@ -180,6 +214,7 @@ func TestProcessWagerHandler(t *testing.T) {
 			wantStatus:     http.StatusNotFound,
 			wantCode:       "WALLET_NOT_FOUND",
 			wantCalls:      1,
+			wantInput:      validInput,
 		},
 		{
 			name:           "should return 409 IDEMPOTENCY_CONFLICT when the key was used with another body",
@@ -189,6 +224,7 @@ func TestProcessWagerHandler(t *testing.T) {
 			wantStatus:     http.StatusConflict,
 			wantCode:       "IDEMPOTENCY_CONFLICT",
 			wantCalls:      1,
+			wantInput:      validInput,
 		},
 		{
 			name:           "should return 503 SERVICE_UNAVAILABLE when the database is unavailable",
@@ -198,6 +234,7 @@ func TestProcessWagerHandler(t *testing.T) {
 			wantStatus:     http.StatusServiceUnavailable,
 			wantCode:       "SERVICE_UNAVAILABLE",
 			wantCalls:      1,
+			wantInput:      validInput,
 		},
 		{
 			name:           "should return 500 INTERNAL_ERROR when an unexpected error happens",
@@ -207,6 +244,7 @@ func TestProcessWagerHandler(t *testing.T) {
 			wantStatus:     http.StatusInternalServerError,
 			wantCode:       "INTERNAL_ERROR",
 			wantCalls:      1,
+			wantInput:      validInput,
 		},
 	}
 
@@ -225,6 +263,7 @@ func TestProcessWagerHandler(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/wagering/transactions", strings.NewReader(test.body))
 			request.Header.Set(IdempotencyKeyHeader, test.idempotencyKey)
 			request.Header.Set("Authorization", "Bearer token")
+			request.Header.Set(CorrelationHeader, "req-42")
 			recorder := httptest.NewRecorder()
 
 			handler.ServeHTTP(recorder, request)
@@ -238,46 +277,7 @@ func TestProcessWagerHandler(t *testing.T) {
 			assert.Equal(t, test.wantFailureCode, body.FailureCode)
 			assert.Equal(t, test.wantReplay, body.IdempotentReplay)
 			assert.Equal(t, test.wantCalls, processor.calls)
+			assert.Equal(t, test.wantInput, processor.input)
 		})
 	}
-}
-
-func TestProcessWagerHandlerPassesTheRequestToTheUseCase(t *testing.T) {
-	t.Parallel()
-
-	processor := &fakeWagerProcessor{result: usecase.WagerResult{
-		TransactionID: domain.NewID(),
-		State:         wager.StateProcessed,
-		Balance:       money.MustNew(10000, money.MustCurrency("BRL")),
-	}}
-	handler := NewHandler(
-		nil,
-		[]Route{&WageringHandler{processWager: processor, logger: slog.New(slog.DiscardHandler)}},
-		nil,
-		fakeTokenVerifier{principal: providerA},
-		slog.New(slog.DiscardHandler),
-	)
-	body := strings.Replace(validWagerBody, `"kind":"BET","money":{"amount":"25.00"`,
-		`"kind":"WIN","money":{"amount":"25.5"`, 1)
-	request := httptest.NewRequest(http.MethodPost, "/wagering/transactions", strings.NewReader(body))
-	request.Header.Set(IdempotencyKeyHeader, "custom-key")
-	request.Header.Set("Authorization", "Bearer token")
-	request.Header.Set(CorrelationHeader, "req-42")
-	recorder := httptest.NewRecorder()
-
-	handler.ServeHTTP(recorder, request)
-
-	assert.Equal(t, http.StatusCreated, recorder.Code)
-	assert.Equal(t, usecase.ProcessWagerInput{
-		ProviderID:            "provider-a",
-		ExternalTransactionID: "transaction-123",
-		IdempotencyKey:        "custom-key",
-		PlayerID:              uuid.MustParse("0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1"),
-		WalletID:              uuid.MustParse("0192f291-27dd-7d3f-8071-5f8685deef37"),
-		RoundID:               "round-987",
-		GameID:                "fortune-chimp",
-		Kind:                  wager.KindWin,
-		Money:                 money.MustNew(2550, money.MustCurrency("BRL")),
-		CorrelationID:         "req-42",
-	}, processor.input)
 }

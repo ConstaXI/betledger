@@ -12,35 +12,20 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/davibanfi/betledger/internal/infrastructure/auth"
 )
 
-func TestWithCorrelationIDKeepsValidHeader(t *testing.T) {
-	t.Parallel()
-
-	var seen string
-	handler := withCorrelationID(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		seen = correlationID(r.Context())
-	}))
-	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	request.Header.Set(CorrelationHeader, "req-abc_1.2")
-	recorder := httptest.NewRecorder()
-
-	handler.ServeHTTP(recorder, request)
-
-	assert.Equal(t, "req-abc_1.2", seen)
-	assert.Equal(t, "req-abc_1.2", recorder.Header().Get(CorrelationHeader))
-}
-
-func TestWithCorrelationIDReplacesUnsafeHeader(t *testing.T) {
+func TestWithCorrelationID(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		header string
+		name     string
+		header   string
+		wantKept bool
 	}{
+		{name: "should accept when the header is safe", header: "req-abc_1.2", wantKept: true},
+		{name: "should accept when the header has the maximum length", header: strings.Repeat("a", maxCorrelationIDLength), wantKept: true},
 		{name: "should generate an id when the header is missing", header: ""},
 		{name: "should generate an id when the header carries a line break", header: "req-1\ninjected"},
 		{name: "should generate an id when the header carries spaces", header: "req 1"},
@@ -62,7 +47,8 @@ func TestWithCorrelationIDReplacesUnsafeHeader(t *testing.T) {
 			handler.ServeHTTP(recorder, request)
 
 			_, err := uuid.Parse(seen)
-			require.NoError(t, err)
+			assert.Equal(t, test.wantKept, seen == test.header)
+			assert.Equal(t, !test.wantKept, err == nil)
 			assert.Equal(t, seen, recorder.Header().Get(CorrelationHeader))
 		})
 	}
