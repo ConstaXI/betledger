@@ -87,6 +87,18 @@ assert.Equal(t, test.wantResult, got)
 Isso funciona porque, em caso de erro, a operação devolve o valor zero — que
 coincide com o `wantResult` não preenchido — e `errors.Is(nil, nil)` é `true`.
 
+**Só métodos públicos têm teste.** Funções privadas extraídas para legibilidade
+(como `findReplay` e `newEvents` no `ProcessWager`) nunca ganham teste próprio: a
+cobertura vem do teste do método público que as usa, como o `Execute`. Se um
+caminho de uma função privada não é alcançável pelo método público, ele não
+deveria existir.
+
+**Tudo que der vai para a tabela.** Evite funções de teste avulsas ao lado da
+tabela; enriqueça a struct para que o cenário caiba nela. Pré-condições viram
+campos — operações executadas antes (`earlier`), falhas injetadas nos fakes
+(`outboxErr`) — e as afirmações continuam as mesmas para todos os casos. Teste
+avulso só quando o cenário realmente não cabe, e explique por quê.
+
 **Testes de integração** ficam em `test/integration`, e os arquivos de lá contêm
 **apenas testes** (mais o `TestMain`). Toda a infraestrutura — subir containers,
 iniciar a aplicação pelo `app.Options()`, chamadas HTTP, consultas ao banco — vive
