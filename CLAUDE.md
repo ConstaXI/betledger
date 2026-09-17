@@ -7,7 +7,8 @@ spec é o critério de avaliação e tem itens eliminatórios.
 ## Comandos
 
 ```sh
-make check              # vet, testes com -race, gofmt e sqlc diff — rodar antes de dar algo por pronto
+make check              # lint, testes com -race, gofmt e sqlc diff — rodar antes de dar algo por pronto
+make lint               # golangci-lint, como tool do módulo (go tool golangci-lint)
 make test-integration   # integração com testcontainers; exige Docker
 make generate           # regenera o sqlc após mudar migration ou query
 make dev                # sobe a infraestrutura, migra e inicia a API

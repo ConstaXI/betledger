@@ -37,8 +37,9 @@ Ainda **não** existem: as rotas de leitura e a reconciliação. A seção
 - **Go 1.27.1 ou superior**, a versão declarada em [go.mod](go.mod) e no
   [Dockerfile](Dockerfile), e **make**, para desenvolver e rodar os testes.
 
-O sqlc não precisa ser instalado: ele é uma tool do módulo e roda com
-`go tool sqlc`.
+O sqlc e o golangci-lint não precisam ser instalados: são tools do módulo, com
+a versão fixada no [go.mod](go.mod), e rodam com `go tool sqlc` e
+`go tool golangci-lint`.
 
 ## Executar
 
@@ -377,7 +378,8 @@ Erros seguem sempre o mesmo formato:
 make test               # unitários
 make test-race          # unitários com detector de corrida
 make test-integration   # unitários e integração, contra containers reais
-make check              # vet, testes, formatação e sqlc em dia
+make lint               # golangci-lint, incluindo os testes de integração
+make check              # lint, testes, formatação e sqlc em dia
 ```
 
 Os testes unitários ficam ao lado do código que testam, como é convenção em Go.

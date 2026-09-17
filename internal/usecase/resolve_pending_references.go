@@ -47,15 +47,13 @@ func NewResolvePendingReferences(
 	policy ReferenceRetryPolicy,
 ) *ResolvePendingReferences {
 	return &ResolvePendingReferences{
-		settlement: settlement{
-			walletsRepository:      wallets,
-			transactionsRepository: transactions,
-			ledgerRepository:       ledger,
-			outboxRepository:       outbox,
-			clock:                  clock,
-		},
-		transactor: transactor,
-		policy:     policy,
+		walletsRepository:      wallets,
+		transactionsRepository: transactions,
+		ledgerRepository:       ledger,
+		outboxRepository:       outbox,
+		clock:                  clock,
+		transactor:             transactor,
+		policy:                 policy,
 	}
 }
 

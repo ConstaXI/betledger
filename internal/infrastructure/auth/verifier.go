@@ -89,7 +89,7 @@ func NewTokenVerifier(lc fx.Lifecycle, cfg config.Config) *TokenVerifier {
 func (v *TokenVerifier) Verify(ctx context.Context, rawToken string) (Principal, error) {
 	token, err := v.verifier.Verify(ctx, rawToken)
 	if err != nil {
-		return Principal{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		return Principal{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 
 	var claims struct {
@@ -99,7 +99,7 @@ func (v *TokenVerifier) Verify(ctx context.Context, rawToken string) (Principal,
 		ProviderID string `json:"provider_id"`
 	}
 	if err := token.Claims(&claims); err != nil {
-		return Principal{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		return Principal{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 	return Principal{Roles: claims.RealmAccess.Roles, ProviderID: claims.ProviderID}, nil
 }

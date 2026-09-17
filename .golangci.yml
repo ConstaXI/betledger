@@ -1,0 +1,43 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - misspell
+    - nilerr
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - usestdlibvars
+  settings:
+    revive:
+      rules:
+        - name: exported
+        - name: error-strings
+        - name: context-as-argument
+        - name: indent-error-flow
+        - name: unreachable-code
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - path: internal/infrastructure/postgres/sqlcgen
+        linters:
+          - revive
+      # The test decodes JSON into Money on purpose, to prove that a payload
+      # cannot initialize it, which is exactly the pattern SA9005 reports.
+      - path: internal/domain/money/money_test.go
+        text: SA9005
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

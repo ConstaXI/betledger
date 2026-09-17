@@ -16,7 +16,7 @@ AWS_SECRET_ACCESS_KEY ?= test
 CLIENT ?= provider-a
 export HTTP_PORT DATABASE_URL OIDC_ISSUER_URL OIDC_AUDIENCE AWS_REGION AWS_ENDPOINT_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 
-.PHONY: help dev run workers infra-up token db-up db-down db-reset migrate-up migrate-down migrate-status \
+.PHONY: help dev run workers infra-up token lint db-up db-down db-reset migrate-up migrate-down migrate-status \
 	test test-race test-integration vet fmt generate check
 
 help: ## List the available targets
@@ -69,12 +69,15 @@ vet: ## Run go vet, including the integration tests
 	go vet ./...
 	go vet -tags=integration ./...
 
+lint: ## Run golangci-lint, including the integration tests
+	go tool golangci-lint run --build-tags=integration
+
 fmt: ## Format the code
 	gofmt -w .
 
 generate: ## Regenerate the sqlc code from migrations and queries
 	go tool sqlc generate
 
-check: vet test-race ## Run the checks expected before committing
+check: lint test-race ## Run the checks expected before committing
 	@test -z "$$(gofmt -l .)" || (echo "unformatted files:"; gofmt -l .; exit 1)
 	go tool sqlc diff
