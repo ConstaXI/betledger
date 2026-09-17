@@ -155,26 +155,41 @@ make test-integration   # unitários e integração, contra containers reais
 make check              # vet, testes, formatação e sqlc em dia
 ```
 
-Os testes de integração ficam atrás da build tag `integration`, então
-`go test ./...` roda só os unitários e não exige Docker. Com a tag, o
-testcontainers sobe um PostgreSQL descartável por execução, sem estado
-compartilhado e sem precisar do `make db-up`. Eles verificam as migrations nos
-dois sentidos, a atomicidade da abertura e as constraints do banco — inclusive a
-imutabilidade do ledger e da outbox, atacando as tabelas diretamente com SQL.
+Os testes unitários ficam ao lado do código que testam, como é convenção em Go.
+Os de integração ficam em [test/integration](test/integration), só com os testes,
+e a infraestrutura que eles usam — containers, a aplicação em execução, chamadas
+HTTP e consultas ao banco — fica em [test/testenv](test/testenv).
+
+Eles ficam atrás da build tag `integration`, então `go test ./...` roda só os
+unitários e não exige Docker. Com a tag, o testcontainers sobe um PostgreSQL
+descartável por execução, sem estado compartilhado e sem precisar do
+`make db-up`. Cobrem dois níveis:
+
+- **Persistência**: migrations nos dois sentidos, atomicidade, idempotência, as
+  constraints do banco — inclusive a imutabilidade do ledger e da outbox,
+  atacando as tabelas diretamente com SQL — e os cenários de concorrência da
+  spec, como duas apostas de 80.00 sobre 100.00 e a mesma aposta enviada 50 vezes
+  em paralelo.
+- **Aplicação**: a aplicação real composta pelo Fx, chamada por HTTP. Verifica que
+  ela sobe e serve, que no encerramento para de aceitar conexões e fecha o pool do
+  banco, que o estado sobrevive a um reinício, e que com o banco travado o
+  readiness falha e as escritas respondem `503` dentro do prazo, voltando ao normal
+  quando o banco retorna.
 
 Para rodar um teste específico:
 
 ```sh
-go test -run 'TestMoneyAdd' ./internal/domain
-go test -tags=integration -run 'TestSchemaEnforcesFinancialInvariants' ./internal/infrastructure/postgres
+go test -run 'TestMoneyAdd' ./internal/domain/money
+go test -tags=integration -run 'TestSchemaEnforcesFinancialInvariants' ./test/integration
 ```
 
 ## Estrutura
 
 ```
 api/                                 contrato HTTP em OpenAPI e página do Swagger UI
-cmd/betledger/                       entrypoint, composição da aplicação via Fx
+cmd/betledger/                       entrypoint
 cmd/migrate/                         aplicação e reversão das migrations
+internal/app/                        composição da aplicação via Fx
 internal/domain/                     erros e identificadores compartilhados
 internal/domain/money/               valor monetário exato, sem ponto flutuante
 internal/domain/ledger/              lançamentos do ledger append-only
@@ -185,6 +200,8 @@ internal/usecase/                    casos de uso e as portas que eles consomem
 internal/infrastructure/config/      carga e validação da configuração de ambiente
 internal/infrastructure/httpserver/  handlers, middleware e ciclo de vida do servidor
 internal/infrastructure/postgres/    repositórios, migrations e queries do sqlc
+test/integration/                    testes de integração, só os testes
+test/testenv/                        containers, aplicação e helpers dos testes de integração
 ```
 
 A regra que orienta a organização: as dependências apontam para dentro.

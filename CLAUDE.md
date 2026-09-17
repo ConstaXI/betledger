@@ -81,6 +81,13 @@ assert.Equal(t, test.wantResult, got)
 Isso funciona porque, em caso de erro, a operação devolve o valor zero — que
 coincide com o `wantResult` não preenchido — e `errors.Is(nil, nil)` é `true`.
 
+**Testes de integração** ficam em `test/integration`, e os arquivos de lá contêm
+**apenas testes** (mais o `TestMain`). Toda a infraestrutura — subir containers,
+iniciar a aplicação pelo `app.Options()`, chamadas HTTP, consultas ao banco — vive
+em `test/testenv`. Ambos ficam atrás da build tag `integration`; como o
+`goimports` não enxerga o `testenv` sem a tag, confira os imports à mão. Testes
+unitários continuam ao lado do código.
+
 **Sem helpers locais** além dos fixtures compartilhados do pacote
 `internal/domain/domaintest` (`MustParseMoney`, `MustOpenWallet`,
 `ValidExternalParams`, `MustExternalTransaction`...), que existe só para testes.

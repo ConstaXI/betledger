@@ -129,6 +129,11 @@ Assim o cliente distingue, só pelo contrato, o que deve corrigir, o que pode
 repetir e o que é definitivo. Falhas internas são registradas no log, mas seus
 detalhes nunca chegam ao cliente.
 
+Cada requisição tem um prazo de 5 segundos, abaixo do `WriteTimeout` do servidor.
+Sem ele, uma requisição feita com o banco travado ficava pendurada
+indefinidamente; com ele, o prazo expirado aborta a operação pendente e a
+resposta é `503`, que o cliente pode repetir com segurança graças à idempotência.
+
 ## Interpretações adotadas
 
 - `WIN` aceita referência opcional a uma aposta da mesma rodada; `BET` e `LOSS`
