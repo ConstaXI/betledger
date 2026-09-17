@@ -2,6 +2,7 @@ package usecase_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -22,6 +23,8 @@ type fakeStore struct {
 	transactions []*wager.Transaction
 	updated      map[domain.ID]*wager.Transaction
 	nextAttempts map[domain.ID]time.Time
+	published    map[domain.ID]time.Time
+	publications map[domain.ID]int
 	entries      []*ledger.Entry
 	events       []event.Event
 	eventTypes   []event.Type
@@ -42,6 +45,8 @@ func newFakeStore() fakeStore {
 		wallets:      map[domain.ID]*wallet.Wallet{},
 		updated:      map[domain.ID]*wager.Transaction{},
 		nextAttempts: map[domain.ID]time.Time{},
+		published:    map[domain.ID]time.Time{},
+		publications: map[domain.ID]int{},
 	}
 }
 
@@ -71,6 +76,12 @@ func (f *fakeTransactor) WithinTransaction(ctx context.Context, fn func(ctx cont
 	}
 	for id, at := range tx.staged.nextAttempts {
 		f.committed.nextAttempts[id] = at
+	}
+	for id, at := range tx.staged.published {
+		f.committed.published[id] = at
+	}
+	for id, attempts := range tx.staged.publications {
+		f.committed.publications[id] = attempts
 	}
 	f.committed.entries = append(f.committed.entries, tx.staged.entries...)
 	f.committed.events = append(f.committed.events, tx.staged.events...)
@@ -296,5 +307,78 @@ func (f fakeOutbox) Append(ctx context.Context, events ...event.Event) error {
 		tx.staged.events = append(tx.staged.events, e)
 		tx.staged.eventTypes = append(tx.staged.eventTypes, e.Type)
 	}
+	return nil
+}
+
+func (f fakeOutbox) LeasePending(
+	ctx context.Context,
+	dueAt, leaseUntil time.Time,
+	limit int,
+) ([]usecase.OutboxRecord, error) {
+	tx, err := transactionFrom(ctx)
+	if err != nil {
+		return nil, err
+	}
+	blocked := map[domain.ID]bool{}
+	var leased []usecase.OutboxRecord
+	for _, e := range tx.committed.events {
+		_, published := tx.committed.published[e.ID]
+		due := !tx.committed.nextAttempts[e.ID].After(dueAt)
+		head := !published && !blocked[e.AggregateID]
+		blocked[e.AggregateID] = blocked[e.AggregateID] || !published
+		if head && due && len(leased) < limit {
+			payload, err := json.Marshal(e)
+			if err != nil {
+				return nil, err
+			}
+			tx.staged.nextAttempts[e.ID] = leaseUntil
+			leased = append(leased, usecase.OutboxRecord{
+				EventID:     e.ID,
+				AggregateID: e.AggregateID,
+				EventType:   e.Type.String(),
+				Payload:     payload,
+				Attempts:    tx.committed.publications[e.ID],
+			})
+		}
+	}
+	return leased, nil
+}
+
+func (f fakeOutbox) MarkPublished(ctx context.Context, eventID domain.ID, publishedAt time.Time) error {
+	tx, err := transactionFrom(ctx)
+	if err != nil {
+		return err
+	}
+	tx.staged.published[eventID] = publishedAt
+	return nil
+}
+
+func (f fakeOutbox) ReschedulePublication(
+	ctx context.Context,
+	eventID domain.ID,
+	attempts int,
+	nextAttemptAt time.Time,
+) error {
+	tx, err := transactionFrom(ctx)
+	if err != nil {
+		return err
+	}
+	tx.staged.publications[eventID] = attempts
+	tx.staged.nextAttempts[eventID] = nextAttemptAt
+	return nil
+}
+
+type fakePublisher struct {
+	failures  int
+	calls     int
+	published []usecase.OutboxRecord
+}
+
+func (f *fakePublisher) Publish(_ context.Context, record usecase.OutboxRecord) error {
+	f.calls++
+	if f.calls <= f.failures {
+		return usecase.ErrUnavailable
+	}
+	f.published = append(f.published, record)
 	return nil
 }

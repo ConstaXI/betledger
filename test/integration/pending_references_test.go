@@ -207,14 +207,14 @@ func TestApplicationResolvesPendingReferencesAfterRestart(t *testing.T) {
 	useCases := isolated.NewUseCases()
 	w := useCases.MustOpenWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
 
-	first := testenv.StartApplication(t, isolated.URL, identityProvider)
+	first := testenv.StartApplication(t, isolated.URL, identityProvider, broker)
 	status, _ := first.SendWager(t, testenv.ReferringInput(w, wager.KindRefund, "refund", "bet", 2500))
 	require.Equal(t, http.StatusAccepted, status)
 	first.Stop(t)
 
 	_, err := useCases.ProcessWager.Execute(context.Background(), testenv.BetInput(w, "bet", 2500))
 	require.NoError(t, err)
-	testenv.StartApplication(t, isolated.URL, identityProvider, func(cfg *config.Config) {
+	testenv.StartApplication(t, isolated.URL, identityProvider, broker, func(cfg *config.Config) {
 		cfg.ReferencePollInterval = 50 * time.Millisecond
 	})
 

@@ -36,6 +36,22 @@ type Config struct {
 	// ReferencePollInterval is how often an idle worker looks for due
 	// operations.
 	ReferencePollInterval time.Duration
+	AWSRegion             string
+	// AWSEndpointURL overrides the AWS endpoint, pointing at LocalStack locally;
+	// empty uses the regular AWS endpoints.
+	AWSEndpointURL string
+	// EventsQueueName is the FIFO queue that receives the published events.
+	EventsQueueName string
+	// OutboxPollInterval is how often an idle publisher looks for due events.
+	OutboxPollInterval time.Duration
+	// OutboxRetryBaseDelay is the wait after the first failed publication of an
+	// event, doubled after each further failure.
+	OutboxRetryBaseDelay time.Duration
+	// OutboxRetryMaxDelay caps the wait between two publications of an event.
+	OutboxRetryMaxDelay time.Duration
+	// OutboxLease is how long a publisher holds the events it took before
+	// another publisher may take them.
+	OutboxLease time.Duration
 }
 
 // Load reads the configuration from the environment and fails when a required
@@ -53,6 +69,13 @@ func Load() (Config, error) {
 		ReferenceRetryMaxDelay:  durationOrDefault("REFERENCE_RETRY_MAX_DELAY", 5*time.Minute, &errs),
 		ReferenceRetryLease:     durationOrDefault("REFERENCE_RETRY_LEASE", 30*time.Second, &errs),
 		ReferencePollInterval:   durationOrDefault("REFERENCE_POLL_INTERVAL", time.Second, &errs),
+		AWSRegion:               envOrDefault("AWS_REGION", "us-east-1"),
+		AWSEndpointURL:          os.Getenv("AWS_ENDPOINT_URL"),
+		EventsQueueName:         envOrDefault("EVENTS_QUEUE_NAME", "wallet-events.fifo"),
+		OutboxPollInterval:      durationOrDefault("OUTBOX_POLL_INTERVAL", 500*time.Millisecond, &errs),
+		OutboxRetryBaseDelay:    durationOrDefault("OUTBOX_RETRY_BASE_DELAY", time.Second, &errs),
+		OutboxRetryMaxDelay:     durationOrDefault("OUTBOX_RETRY_MAX_DELAY", time.Minute, &errs),
+		OutboxLease:             durationOrDefault("OUTBOX_LEASE", 30*time.Second, &errs),
 	}
 	errs = append(errs, cfg.validate())
 	if err := errors.Join(errs...); err != nil {
@@ -83,6 +106,15 @@ func (c Config) validate() error {
 	}
 	if c.ReferenceRetryLease <= 0 || c.ReferencePollInterval <= 0 {
 		errs = append(errs, errors.New("REFERENCE_RETRY_LEASE and REFERENCE_POLL_INTERVAL must be positive"))
+	}
+	if c.EventsQueueName == "" {
+		errs = append(errs, errors.New("EVENTS_QUEUE_NAME cannot be empty"))
+	}
+	if c.OutboxRetryBaseDelay <= 0 || c.OutboxRetryMaxDelay < c.OutboxRetryBaseDelay {
+		errs = append(errs, errors.New("OUTBOX_RETRY_BASE_DELAY must be positive and at most OUTBOX_RETRY_MAX_DELAY"))
+	}
+	if c.OutboxLease <= 0 || c.OutboxPollInterval <= 0 {
+		errs = append(errs, errors.New("OUTBOX_LEASE and OUTBOX_POLL_INTERVAL must be positive"))
 	}
 	return errors.Join(errs...)
 }

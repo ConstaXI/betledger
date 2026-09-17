@@ -14,6 +14,7 @@ import (
 	"github.com/davibanfi/betledger/internal/infrastructure/auth"
 	"github.com/davibanfi/betledger/internal/infrastructure/config"
 	"github.com/davibanfi/betledger/internal/infrastructure/httpserver"
+	"github.com/davibanfi/betledger/internal/infrastructure/messaging"
 	"github.com/davibanfi/betledger/internal/infrastructure/postgres"
 	"github.com/davibanfi/betledger/internal/infrastructure/worker"
 	"github.com/davibanfi/betledger/internal/usecase"
@@ -33,6 +34,11 @@ func Options() fx.Option {
 			usecase.NewProcessWager,
 			newReferenceRetryPolicy,
 			usecase.NewResolvePendingReferences,
+			newPublicationPolicy,
+			usecase.NewPublishOutbox,
+			messaging.NewClient,
+			fx.Annotate(messaging.NewEventPublisher, fx.As(fx.Self()), fx.As(new(usecase.EventPublisher))),
+			fx.Annotate(newSQSHealthCheck, fx.ResultTags(`group:"readiness"`)),
 			fx.Annotate(newPostgresHealthCheck, fx.ResultTags(`group:"readiness"`)),
 			fx.Annotate(auth.NewTokenVerifier, fx.As(new(httpserver.TokenVerifier))),
 		),
@@ -62,6 +68,22 @@ func newReferenceRetryPolicy(cfg config.Config) usecase.ReferenceRetryPolicy {
 		Lease:       cfg.ReferenceRetryLease,
 		BatchSize:   pendingReferenceBatchSize,
 	}
+}
+
+// outboxBatchSize bounds how many events a publisher takes in one go.
+const outboxBatchSize = 100
+
+func newPublicationPolicy(cfg config.Config) usecase.PublicationPolicy {
+	return usecase.PublicationPolicy{
+		BaseDelay: cfg.OutboxRetryBaseDelay,
+		MaxDelay:  cfg.OutboxRetryMaxDelay,
+		Lease:     cfg.OutboxLease,
+		BatchSize: outboxBatchSize,
+	}
+}
+
+func newSQSHealthCheck(publisher *messaging.EventPublisher) httpserver.HealthCheck {
+	return httpserver.HealthCheck{Name: "sqs", Check: publisher.Check}
 }
 
 func newPostgresHealthCheck(pool *pgxpool.Pool) httpserver.HealthCheck {

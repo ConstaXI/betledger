@@ -122,6 +122,12 @@ func TestSchemaEnforcesFinancialInvariants(t *testing.T) {
 			wantCode: restrictViolation,
 		},
 		{
+			name:     "should return restrict_violation when the publication order of an event is changed",
+			sql:      "UPDATE outbox_events SET sequence = sequence + 1000000 WHERE id = $1",
+			args:     []any{eventID},
+			wantCode: restrictViolation,
+		},
+		{
 			name: "should accept when publication tracking columns change",
 			sql:  "UPDATE outbox_events SET attempts = attempts + 1, published_at = now() WHERE id = $1",
 			args: []any{eventID},

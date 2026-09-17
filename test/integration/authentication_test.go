@@ -21,8 +21,8 @@ import (
 func TestApplicationAuthorizesWalletOpening(t *testing.T) {
 	t.Parallel()
 
-	application := testenv.StartApplication(t, database.URL, identityProvider)
-	anotherAudience := testenv.StartApplication(t, database.URL, identityProvider, func(cfg *config.Config) {
+	application := testenv.StartApplication(t, database.URL, identityProvider, broker)
+	anotherAudience := testenv.StartApplication(t, database.URL, identityProvider, broker, func(cfg *config.Config) {
 		cfg.OIDCAudience = "another-api"
 	})
 	walletServiceToken := strings.Split(identityProvider.Token(t, "wallet-service"), ".")
@@ -86,7 +86,7 @@ func TestApplicationAuthorizesWalletOpening(t *testing.T) {
 func TestApplicationAuthorizesOperations(t *testing.T) {
 	t.Parallel()
 
-	application := testenv.StartApplication(t, database.URL, identityProvider)
+	application := testenv.StartApplication(t, database.URL, identityProvider, broker)
 	fromProvider := func(providerID string) func(w *wallet.Wallet) usecase.ProcessWagerInput {
 		return func(w *wallet.Wallet) usecase.ProcessWagerInput {
 			input := testenv.BetInput(w, "shared-identifiers", 2500)

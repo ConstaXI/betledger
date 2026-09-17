@@ -95,10 +95,39 @@ type LedgerRepository interface {
 	Append(ctx context.Context, entry *ledger.Entry) error
 }
 
+// OutboxRecord is an event recorded in the outbox, as it is published.
+type OutboxRecord struct {
+	EventID     domain.ID
+	AggregateID domain.ID
+	EventType   string
+	// Payload is the immutable JSON snapshot of the event, published byte for
+	// byte on every attempt.
+	Payload []byte
+	// Attempts counts the publications of the event that failed.
+	Attempts int
+}
+
 // OutboxRepository records events in the outbox table, to be published after
 // the commit. Writes must run within a transaction, which is what makes
 // recording an event atomic with the change that caused it.
 type OutboxRepository interface {
 	// Append records the events as immutable snapshots, pending publication.
 	Append(ctx context.Context, events ...event.Event) error
+	// LeasePending takes up to limit unpublished events whose next attempt is
+	// due and postpones them to leaseUntil, so that other publishers skip them
+	// meanwhile. It takes only the oldest unpublished event of each aggregate,
+	// so events of the same wallet are published in the order they were
+	// committed, even across publishers.
+	LeasePending(ctx context.Context, dueAt, leaseUntil time.Time, limit int) ([]OutboxRecord, error)
+	// MarkPublished records the event as published.
+	MarkPublished(ctx context.Context, eventID domain.ID, publishedAt time.Time) error
+	// ReschedulePublication records a failed publication and when to try again.
+	ReschedulePublication(ctx context.Context, eventID domain.ID, attempts int, nextAttemptAt time.Time) error
+}
+
+// EventPublisher delivers recorded events to the outside world. The same event
+// may be delivered more than once, always with the same event id, which is how
+// consumers tell a republication apart.
+type EventPublisher interface {
+	Publish(ctx context.Context, record OutboxRecord) error
 }

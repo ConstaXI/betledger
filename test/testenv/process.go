@@ -67,7 +67,12 @@ type Process struct {
 // StartProcess runs the binary against the database and the identity provider
 // and waits until it is ready, stopping it on cleanup. Its output is printed
 // when the test fails.
-func (b *Binary) StartProcess(t *testing.T, databaseURL string, identityProvider *Keycloak) *Process {
+func (b *Binary) StartProcess(
+	t *testing.T,
+	databaseURL string,
+	identityProvider *Keycloak,
+	broker *LocalStack,
+) *Process {
 	t.Helper()
 
 	port := freePort(t)
@@ -80,6 +85,8 @@ func (b *Binary) StartProcess(t *testing.T, databaseURL string, identityProvider
 		"OIDC_DISCOVERY_URL="+identityProvider.IssuerURL,
 		"OIDC_AUDIENCE="+Audience,
 		"REFERENCE_POLL_INTERVAL=1h",
+		"OUTBOX_POLL_INTERVAL=1h",
+		"AWS_ENDPOINT_URL="+broker.EndpointURL,
 	)
 	command.Stdout = output
 	command.Stderr = output

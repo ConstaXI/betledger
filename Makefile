@@ -9,8 +9,12 @@ HTTP_PORT ?= 8080
 DATABASE_URL ?= postgres://betledger:betledger@localhost:5432/betledger?sslmode=disable
 OIDC_ISSUER_URL ?= http://localhost:8081/realms/betledger
 OIDC_AUDIENCE ?= betledger-api
+AWS_REGION ?= us-east-1
+AWS_ENDPOINT_URL ?= http://localhost:4566
+AWS_ACCESS_KEY_ID ?= test
+AWS_SECRET_ACCESS_KEY ?= test
 CLIENT ?= provider-a
-export HTTP_PORT DATABASE_URL OIDC_ISSUER_URL OIDC_AUDIENCE
+export HTTP_PORT DATABASE_URL OIDC_ISSUER_URL OIDC_AUDIENCE AWS_REGION AWS_ENDPOINT_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 
 .PHONY: help dev run infra-up token db-up db-down db-reset migrate-up migrate-down migrate-status \
 	test test-race test-integration vet fmt generate check
@@ -18,13 +22,13 @@ export HTTP_PORT DATABASE_URL OIDC_ISSUER_URL OIDC_AUDIENCE
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  %-18s %s\n", $$1, $$2}'
 
-dev: infra-up migrate-up run ## Start PostgreSQL and Keycloak, apply migrations and run the application
+dev: infra-up migrate-up run ## Start the infrastructure, apply migrations and run the application
 
 run: ## Run the application
 	go run ./cmd/betledger
 
-infra-up: ## Start PostgreSQL and Keycloak and wait until both are healthy
-	docker compose up -d --wait postgres keycloak
+infra-up: ## Start PostgreSQL, Keycloak and LocalStack and wait until they are healthy
+	docker compose up -d --wait postgres keycloak localstack
 
 token: ## Print an access token for a realm client (CLIENT=provider-a by default)
 	@curl -sf $(OIDC_ISSUER_URL)/protocol/openid-connect/token \

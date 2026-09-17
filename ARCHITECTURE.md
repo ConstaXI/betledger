@@ -76,6 +76,39 @@ O `aggregateId` é sempre a carteira. Isso dá ordenação por carteira aos
 consumidores e serve de `MessageGroupId` na fila FIFO, sem serializar carteiras
 independentes entre si.
 
+## Publicação com transactional outbox
+
+**Implementado.** Os eventos são gravados na outbox no mesmo commit da mudança
+que os originou, e um worker separado os publica depois, na fila FIFO
+`wallet-events.fifo`. Nada é publicado antes do commit, porque o publisher só
+enxerga linhas já confirmadas.
+
+- **Ordem por carteira.** A outbox tem uma coluna `sequence` atribuída no insert,
+  enquanto o lock da carteira está tomado, e por isso segue a ordem de commit de
+  cada carteira — ao contrário de `created_at`, que marca o início da transação.
+  O publisher só toma o **evento não publicado mais antigo de cada carteira**; o
+  seguinte espera até ele ser publicado, mesmo que outro publisher esteja livre.
+  Uma falha de publicação segura só aquela carteira.
+- **Vários publishers.** Cada um toma um lote com `FOR UPDATE SKIP LOCKED` e
+  adia `next_attempt_at` pelo tempo do lease; outro publisher pula esses
+  registros. Se o publisher morrer, o lease expira e outro assume.
+- **Pelo menos uma vez.** Publicar e marcar como publicado não são atômicos: se o
+  processo morrer entre os dois, o evento é publicado de novo quando o lease
+  expira, com o mesmo `eventId`. O `MessageDeduplicationId` é o `eventId`, então a
+  fila descarta a repetição dentro da janela de 5 minutos; fora dela, cabe ao
+  consumidor deduplicar pelo `eventId`, o que o contrato documenta.
+- **Nada é descartado.** A publicação que falha é tentada de novo com backoff
+  exponencial, sem limite de tentativas: um evento confirmado no banco nunca se
+  perde. A outbox não tem DLQ; um evento preso aparece como atraso da outbox.
+- **Roteamento.** `MessageGroupId` é a carteira, então consumidores processam os
+  eventos de uma carteira em ordem e carteiras diferentes em paralelo. O corpo da
+  mensagem é o snapshot gravado, byte a byte.
+
+Os testes com LocalStack real cobrem a interrupção entre o commit e a publicação,
+a interrupção entre a publicação e a confirmação — a fila recebe cada evento uma
+vez —, e três publishers simultâneos, conferindo entrega única e ordem por
+carteira. Sem a regra do evento mais antigo por carteira, a ordem se perde.
+
 ## Persistência e fronteira transacional
 
 **Implementado.** PostgreSQL acessado com `pgx`, e SQL explícito com código
@@ -246,8 +279,10 @@ encontra, reaproveita nem reenvia uma operação de outro.
 gerenciados por `fx.Lifecycle`. A inicialização valida a configuração, consulta o
 banco e só então abre o listener, para que uma falha impeça a subida em vez de
 ocorrer em segundo plano. O encerramento segue a ordem inversa: o servidor para
-de aceitar conexões e conclui as em andamento, o worker de referências pendentes
-conclui a tentativa em andamento, e só depois o pool do banco é fechado. Um teste valida o grafo de dependências do Fx sem precisar de banco.
+de aceitar conexões e conclui as em andamento, os workers de referências
+pendentes e de publicação concluem a rodada em andamento, e só depois o pool do
+banco é fechado. O readiness checa o PostgreSQL e o SQS, e a aplicação não sobe
+se a fila de eventos não existir. Um teste valida o grafo de dependências do Fx sem precisar de banco.
 
 ## HTTP
 
@@ -283,5 +318,5 @@ resposta é `503`, que o cliente pode repetir com segurança graças à idempot�
 
 ## Trabalho não concluído
 
-- **Publicação da outbox** e **inbox**, com SQS em filas FIFO e DLQ.
+- **Consumidor SQS** com inbox e DLQ.
 - **Reconciliação** e **observabilidade** além dos logs JSON.

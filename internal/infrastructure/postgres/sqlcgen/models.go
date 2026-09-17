@@ -20,6 +20,7 @@ type OutboxEvent struct {
 	NextAttemptAt time.Time
 	PublishedAt   *time.Time
 	CreatedAt     time.Time
+	Sequence      int64
 }
 
 type WagerTransaction struct {

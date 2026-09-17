@@ -24,13 +24,15 @@ type Application struct {
 	fxApp *fx.App
 }
 
-// StartApplication starts the application against the database and the
-// identity provider, stopping it on cleanup. Options adjust the configuration
+// StartApplication starts the application against the database, the identity
+// provider and the broker, stopping it on cleanup. Its workers never run unless
+// an option shortens their intervals. Options adjust the configuration
 // before start. Logs are discarded.
 func StartApplication(
 	t *testing.T,
 	databaseURL string,
 	identityProvider *Keycloak,
+	broker *LocalStack,
 	options ...func(cfg *config.Config),
 ) *Application {
 	t.Helper()
@@ -49,6 +51,13 @@ func StartApplication(
 		ReferenceRetryMaxDelay:  5 * time.Minute,
 		ReferenceRetryLease:     30 * time.Second,
 		ReferencePollInterval:   time.Hour,
+		AWSRegion:               "us-east-1",
+		AWSEndpointURL:          broker.EndpointURL,
+		EventsQueueName:         EventsQueueName,
+		OutboxPollInterval:      time.Hour,
+		OutboxRetryBaseDelay:    time.Second,
+		OutboxRetryMaxDelay:     time.Minute,
+		OutboxLease:             30 * time.Second,
 	}
 	for _, option := range options {
 		option(&cfg)

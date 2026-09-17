@@ -11,7 +11,7 @@ import (
 	"go.uber.org/fx/fxtest"
 )
 
-type fakeResolver struct {
+type fakeJob struct {
 	delay     time.Duration
 	started   chan struct{}
 	startOnce sync.Once
@@ -20,7 +20,7 @@ type fakeResolver struct {
 	cancelled bool
 }
 
-func (f *fakeResolver) Execute(ctx context.Context) (int, error) {
+func (f *fakeJob) Execute(ctx context.Context) (int, error) {
 	f.startOnce.Do(func() { close(f.started) })
 	f.mu.Lock()
 	f.calls++
@@ -37,29 +37,29 @@ func (f *fakeResolver) Execute(ctx context.Context) (int, error) {
 	}
 }
 
-func TestPendingReferences(t *testing.T) {
+func TestPoller(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name          string
-		attemptDelay  time.Duration
+		roundDelay    time.Duration
 		stopTimeout   time.Duration
 		wantErr       error
 		wantCancelled bool
 	}{
 		{
-			name:         "should accept when the worker is idle on stop",
-			attemptDelay: 0,
-			stopTimeout:  time.Second,
+			name:        "should accept when the worker is idle on stop",
+			roundDelay:  0,
+			stopTimeout: time.Second,
 		},
 		{
-			name:         "should accept when the attempt in progress ends within the stop deadline",
-			attemptDelay: 100 * time.Millisecond,
-			stopTimeout:  2 * time.Second,
+			name:        "should accept when the round in progress ends within the stop deadline",
+			roundDelay:  100 * time.Millisecond,
+			stopTimeout: 2 * time.Second,
 		},
 		{
-			name:          "should return DeadlineExceeded when the attempt outlives the stop deadline, cancelling it",
-			attemptDelay:  time.Minute,
+			name:          "should return DeadlineExceeded when the round outlives the stop deadline, cancelling it",
+			roundDelay:    time.Minute,
 			stopTimeout:   50 * time.Millisecond,
 			wantErr:       context.DeadlineExceeded,
 			wantCancelled: true,
@@ -70,11 +70,11 @@ func TestPendingReferences(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			resolver := &fakeResolver{delay: test.attemptDelay, started: make(chan struct{})}
+			job := &fakeJob{delay: test.roundDelay, started: make(chan struct{})}
 			lc := fxtest.NewLifecycle(t)
-			worker := newPendingReferences(lc, resolver, 10*time.Millisecond, slog.New(slog.DiscardHandler))
+			p := newPoller(lc, "test worker", job, 10*time.Millisecond, slog.New(slog.DiscardHandler))
 			lc.RequireStart()
-			<-resolver.started
+			<-job.started
 			ctx, cancel := context.WithTimeout(context.Background(), test.stopTimeout)
 			defer cancel()
 
@@ -82,13 +82,13 @@ func TestPendingReferences(t *testing.T) {
 
 			returned := false
 			select {
-			case <-worker.done:
+			case <-p.done:
 				returned = true
 			default:
 			}
 			assert.ErrorIs(t, err, test.wantErr)
-			assert.Equal(t, test.wantCancelled, resolver.cancelled)
-			assert.Positive(t, resolver.calls)
+			assert.Equal(t, test.wantCancelled, job.cancelled)
+			assert.Positive(t, job.calls)
 			assert.True(t, returned, "the worker must have returned once stopped")
 		})
 	}

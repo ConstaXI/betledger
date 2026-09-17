@@ -20,10 +20,12 @@ O projeto está em construção incremental. O que existe hoje:
   provedor só age em nome próprio.
 - **Aplicação em container** — `docker compose up --build` sobe tudo, com as
   migrations aplicadas antes da aplicação.
+- **Publicação de eventos** — um worker publica a outbox na fila FIFO
+  `wallet-events.fifo`, no LocalStack, depois do commit, na ordem de cada carteira.
 - **Health checks** — liveness em `GET /health/live` e readiness, que checa o
-  banco, em `GET /health/ready`.
+  banco e o SQS, em `GET /health/ready`.
 
-Ainda **não** existem: as rotas de leitura, SQS e o worker que publica a outbox. A seção
+Ainda **não** existem: o consumidor SQS com inbox e DLQ e as rotas de leitura. A seção
 [Próximos passos](#próximos-passos) lista a ordem prevista.
 
 ## Pré-requisitos
@@ -43,7 +45,9 @@ A partir de um checkout limpo:
 docker compose up --build
 ```
 
-O Compose sobe o PostgreSQL e o Keycloak, espera os dois ficarem saudáveis,
+O Compose sobe o PostgreSQL, o Keycloak e o LocalStack, com as filas criadas por
+[deploy/localstack/create-queues.sh](deploy/localstack/create-queues.sh), espera
+os três ficarem saudáveis,
 aplica as migrations num container de execução única (`migrate`) e só então
 inicia a aplicação em http://localhost:8080. A imagem é multi-stage e roda um
 binário estático sobre `distroless`, sem shell e como usuário sem privilégios.
@@ -56,14 +60,14 @@ cp .env.example .env
 make dev
 ```
 
-O `make dev` sobe o PostgreSQL e o Keycloak, aguarda os dois ficarem saudáveis,
+O `make dev` sobe o PostgreSQL, o Keycloak e o LocalStack, aguarda os três ficarem saudáveis,
 aplica as migrations e inicia a aplicação. Ela fica no ar até receber `SIGINT` ou `SIGTERM`, quando
 para de aceitar conexões, conclui as requisições em andamento e fecha o banco.
 
 Os passos também podem ser executados separadamente:
 
 ```sh
-make infra-up     # sobe o PostgreSQL e o Keycloak
+make infra-up     # sobe o PostgreSQL, o Keycloak e o LocalStack
 make migrate-up   # aplica as migrations
 make run          # inicia a aplicação
 ```
@@ -84,6 +88,14 @@ make run          # inicia a aplicação
 | `REFERENCE_RETRY_MAX_DELAY` | não | `5m` | Teto da espera entre tentativas |
 | `REFERENCE_RETRY_LEASE` | não | `30s` | Por quanto tempo um worker reserva as operações que tomou |
 | `REFERENCE_POLL_INTERVAL` | não | `1s` | Intervalo com que o worker ocioso procura operações vencidas |
+| `AWS_REGION` | não | `us-east-1` | Região da AWS |
+| `AWS_ENDPOINT_URL` | não | — | Endpoint da AWS; aponta para o LocalStack localmente |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | sim | — | Credenciais da AWS; qualquer valor no LocalStack |
+| `EVENTS_QUEUE_NAME` | não | `wallet-events.fifo` | Fila FIFO que recebe os eventos publicados |
+| `OUTBOX_POLL_INTERVAL` | não | `500ms` | Intervalo com que o publisher ocioso procura eventos |
+| `OUTBOX_RETRY_BASE_DELAY` | não | `1s` | Espera após a primeira publicação que falhou; dobra a cada nova |
+| `OUTBOX_RETRY_MAX_DELAY` | não | `1m` | Teto da espera entre publicações de um evento |
+| `OUTBOX_LEASE` | não | `30s` | Por quanto tempo um publisher reserva os eventos que tomou |
 
 A configuração é validada na inicialização, e o banco é consultado antes de o
 servidor abrir a porta: sem `DATABASE_URL` ou `OIDC_ISSUER_URL`, com o banco
@@ -238,6 +250,31 @@ acabam.
 | `409` | `IDEMPOTENCY_CONFLICT`: chave reutilizada com outro corpo, ou operação reenviada com outra chave |
 | `404` | `WALLET_NOT_FOUND` |
 
+### Eventos publicados
+
+Todo evento gravado na outbox é publicado em `wallet-events.fifo` depois do
+commit que o originou. O corpo da mensagem é o evento exatamente como gravado —
+envelope com `eventId`, `eventType`, `aggregateId`, `correlationId`,
+`causationId` opcional, `occurredAt`, `version` e `data` —, e as mensagens levam
+também os atributos `eventType` e `eventId`.
+
+| Campo SQS | Valor | Para quê |
+| --- | --- | --- |
+| `MessageGroupId` | `aggregateId`, a carteira | eventos de uma carteira são consumidos em ordem; carteiras diferentes, em paralelo |
+| `MessageDeduplicationId` | `eventId` | a fila descarta uma republicação dentro da janela de 5 minutos |
+
+A entrega é **pelo menos uma vez**: um evento pode chegar de novo, sempre com o
+mesmo `eventId`, e o consumidor deve deduplicar por ele. Os eventos de uma
+carteira chegam na ordem em que foram confirmados no banco.
+
+Para ver os eventos localmente:
+
+```sh
+docker compose exec localstack awslocal sqs receive-message \
+  --queue-url http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/wallet-events.fifo \
+  --max-number-of-messages 10 --attribute-names All
+```
+
 ### Correlação
 
 Toda resposta carrega `X-Correlation-Id`. Se a requisição enviar um valor com
@@ -279,8 +316,9 @@ HTTP e consultas ao banco — fica em [test/testenv](test/testenv).
 
 Eles ficam atrás da build tag `integration`, então `go test ./...` roda só os
 unitários e não exige Docker. Com a tag, o testcontainers sobe um PostgreSQL e
-um Keycloak descartáveis por execução, com o mesmo realm do Compose, sem estado
-compartilhado e sem precisar do `make infra-up`. Cobrem dois níveis:
+um Keycloak e um LocalStack descartáveis por execução, com o mesmo realm e as
+mesmas filas do Compose, sem estado
+compartilhado e sem precisar do `make infra-up`. Cobrem estes níveis:
 
 - **Persistência**: migrations nos dois sentidos, atomicidade, idempotência, as
   constraints do banco — inclusive a imutabilidade do ledger e da outbox,
@@ -292,6 +330,12 @@ compartilhado e sem precisar do `make infra-up`. Cobrem dois níveis:
   conexões, contra o mesmo banco. As duas apostas de 80.00 chegam a instâncias
   diferentes, os reenvios vão para a terceira, e a mesma aposta é enviada 50
   vezes distribuída entre as três.
+- **Publicação e retomada**: publisher e worker de referências contra PostgreSQL
+  e SQS reais — eventos entregues na ordem de cada carteira, republicação após
+  interrupção entre o commit e a publicação e entre a publicação e a confirmação,
+  vários publishers e resolvedores disputando o mesmo banco, lease abandonado e
+  retomada após reinício. Esses testes usam um PostgreSQL próprio, porque os
+  workers tomam todo o trabalho vencido do banco.
 - **Aplicação**: a aplicação real composta pelo Fx, chamada por HTTP. Verifica que
   ela sobe e serve, que no encerramento para de aceitar conexões e fecha o pool do
   banco, que o estado sobrevive a um reinício, e que com o banco travado o
@@ -316,6 +360,7 @@ Dockerfile                           imagem multi-stage com a aplicação e o bi
 cmd/betledger/                       entrypoint
 cmd/migrate/                         aplicação e reversão das migrations
 deploy/keycloak/                     realm importado pelo Keycloak no Compose e nos testes
+deploy/localstack/                   provisionamento das filas no Compose e nos testes
 internal/app/                        composição da aplicação via Fx
 internal/domain/                     erros e identificadores compartilhados
 internal/domain/money/               valor monetário exato, sem ponto flutuante
@@ -327,8 +372,9 @@ internal/usecase/                    casos de uso e as portas que eles consomem
 internal/infrastructure/auth/        validação dos access tokens do Keycloak
 internal/infrastructure/config/      carga e validação da configuração de ambiente
 internal/infrastructure/httpserver/  handlers, middleware e ciclo de vida do servidor
+internal/infrastructure/messaging/   cliente SQS e publicação dos eventos
 internal/infrastructure/postgres/    repositórios, migrations e queries do sqlc
-internal/infrastructure/worker/      workers em segundo plano, como a retomada de referências pendentes
+internal/infrastructure/worker/      workers em segundo plano: retomada de referências e publicação da outbox
 test/integration/                    testes de integração, só os testes
 test/testenv/                        containers, aplicação e helpers dos testes de integração
 ```
@@ -342,5 +388,5 @@ implementando as portas dos casos de uso.
 
 Na ordem prevista, seguindo [SPECS.md](SPECS.md):
 
-1. SQS com inbox e o worker de publicação da outbox (seções 10 e 11).
+1. Consumidor SQS de `wager-transactions.fifo` com inbox e DLQ (seção 10).
 2. Rotas de leitura, observabilidade e reconciliação (seções 9 e 12).

@@ -130,15 +130,20 @@ func (uc *ResolvePendingReferences) retry(ctx context.Context, pending PendingRe
 }
 
 // delay is the wait before the attempt that follows the given number of
-// unsuccessful ones: BaseDelay, doubled after each further attempt, capped at
-// MaxDelay.
+// unsuccessful ones.
 func (p ReferenceRetryPolicy) delay(attempts int) time.Duration {
-	delay := p.BaseDelay
+	return backoff(p.BaseDelay, p.MaxDelay, attempts)
+}
+
+// backoff is base after the first unsuccessful attempt, doubled after each
+// further one and capped at maximum.
+func backoff(base, maximum time.Duration, attempts int) time.Duration {
+	delay := base
 	for range attempts - 1 {
-		if delay >= p.MaxDelay/2 {
-			return p.MaxDelay
+		if delay >= maximum/2 {
+			return maximum
 		}
 		delay *= 2
 	}
-	return min(delay, p.MaxDelay)
+	return min(delay, maximum)
 }

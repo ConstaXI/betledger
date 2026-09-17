@@ -9,11 +9,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/fx/fxtest"
 
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
+	"github.com/davibanfi/betledger/internal/infrastructure/config"
+	"github.com/davibanfi/betledger/internal/infrastructure/messaging"
 	"github.com/davibanfi/betledger/internal/infrastructure/postgres"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
@@ -298,5 +301,101 @@ func (p *Postgres) AbandonPendingReferences(t *testing.T, lease time.Duration) i
 			leased, err = postgres.NewTransactionRepository().LeasePendingReferences(ctx, now, now.Add(lease), 100)
 			return err
 		}))
+	return len(leased)
+}
+
+// NewPublisher wires the use case that publishes the outbox of the database to
+// the given queue, with the given policy.
+func (p *Postgres) NewPublisher(
+	t *testing.T,
+	broker *LocalStack,
+	queueName string,
+	policy usecase.PublicationPolicy,
+) *usecase.PublishOutbox {
+	t.Helper()
+
+	lc := fxtest.NewLifecycle(t)
+	publisher := messaging.NewEventPublisher(lc, broker.Client, config.Config{EventsQueueName: queueName})
+	lc.RequireStart()
+	return usecase.NewPublishOutbox(postgres.NewTransactor(p.Pool), postgres.NewOutboxRepository(), publisher,
+		time.Now, policy)
+}
+
+// OutboxEvent is a stored outbox event.
+type OutboxEvent struct {
+	EventID     string
+	EventType   string
+	AggregateID string
+	Published   bool
+}
+
+// OutboxEvents is a list of stored outbox events.
+type OutboxEvents []OutboxEvent
+
+// IDs returns the event ids, in order.
+func (events OutboxEvents) IDs() []string {
+	ids := make([]string, 0, len(events))
+	for _, e := range events {
+		ids = append(ids, e.EventID)
+	}
+	return ids
+}
+
+// Published counts the events already published.
+func (events OutboxEvents) Published() int {
+	published := 0
+	for _, e := range events {
+		if e.Published {
+			published++
+		}
+	}
+	return published
+}
+
+// OutboxEvents reads every outbox event in the order the publisher follows.
+func (p *Postgres) OutboxEvents(t *testing.T) OutboxEvents {
+	t.Helper()
+
+	rows, err := p.Pool.Query(context.Background(), `
+		SELECT id::text, event_type, aggregate_id::text, published_at IS NOT NULL
+		FROM outbox_events ORDER BY sequence`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var events OutboxEvents
+	for rows.Next() {
+		var e OutboxEvent
+		require.NoError(t, rows.Scan(&e.EventID, &e.EventType, &e.AggregateID, &e.Published))
+		events = append(events, e)
+	}
+	require.NoError(t, rows.Err())
+	return events
+}
+
+// AbandonOutboxAfterPublishing leases the due events and publishes them to the
+// queue without marking them, as a publisher that dies between delivering the
+// events and confirming them.
+func (p *Postgres) AbandonOutboxAfterPublishing(
+	t *testing.T,
+	broker *LocalStack,
+	queueName string,
+	lease time.Duration,
+) int {
+	t.Helper()
+
+	ctx := context.Background()
+	lc := fxtest.NewLifecycle(t)
+	publisher := messaging.NewEventPublisher(lc, broker.Client, config.Config{EventsQueueName: queueName})
+	lc.RequireStart()
+
+	var leased []usecase.OutboxRecord
+	now := time.Now()
+	require.NoError(t, postgres.NewTransactor(p.Pool).WithinTransaction(ctx, func(ctx context.Context) error {
+		var err error
+		leased, err = postgres.NewOutboxRepository().LeasePending(ctx, now, now.Add(lease), 100)
+		return err
+	}))
+	for _, record := range leased {
+		require.NoError(t, publisher.Publish(ctx, record))
+	}
 	return len(leased)
 }

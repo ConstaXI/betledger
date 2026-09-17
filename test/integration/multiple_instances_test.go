@@ -20,9 +20,9 @@ func TestTwoConcurrentBetsOnDifferentInstancesNeverOverdrawTheWallet(t *testing.
 
 	const rounds = 15
 	instances := []*testenv.Process{
-		binary.StartProcess(t, database.URL, identityProvider),
-		binary.StartProcess(t, database.URL, identityProvider),
-		binary.StartProcess(t, database.URL, identityProvider),
+		binary.StartProcess(t, database.URL, identityProvider, broker),
+		binary.StartProcess(t, database.URL, identityProvider, broker),
+		binary.StartProcess(t, database.URL, identityProvider, broker),
 	}
 	bearer := identityProvider.Bearer(t, "provider-a")
 	replayStatusOf := map[int]int{
@@ -82,9 +82,9 @@ func TestTheSameBetSentFiftyTimesAcrossInstancesDebitsOnce(t *testing.T) {
 		attempts = 50
 	)
 	instances := []*testenv.Process{
-		binary.StartProcess(t, database.URL, identityProvider),
-		binary.StartProcess(t, database.URL, identityProvider),
-		binary.StartProcess(t, database.URL, identityProvider),
+		binary.StartProcess(t, database.URL, identityProvider, broker),
+		binary.StartProcess(t, database.URL, identityProvider, broker),
+		binary.StartProcess(t, database.URL, identityProvider, broker),
 	}
 	bearer := identityProvider.Bearer(t, "provider-a")
 

@@ -35,3 +35,107 @@ func (q *Queries) InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventPa
 	)
 	return err
 }
+
+const leasePendingOutboxEvents = `-- name: LeasePendingOutboxEvents :many
+UPDATE outbox_events
+SET next_attempt_at = $1::timestamptz
+WHERE id IN (
+    SELECT head.id
+    FROM outbox_events AS head
+    WHERE head.published_at IS NULL
+      AND head.next_attempt_at <= $2::timestamptz
+      AND NOT EXISTS (
+          SELECT 1
+          FROM outbox_events AS earlier
+          WHERE earlier.aggregate_id = head.aggregate_id
+            AND earlier.published_at IS NULL
+            AND earlier.sequence < head.sequence
+      )
+    ORDER BY head.sequence
+    LIMIT $3::int
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id, aggregate_id, event_type, payload, attempts
+`
+
+type LeasePendingOutboxEventsParams struct {
+	LeaseUntil time.Time
+	DueAt      time.Time
+	BatchSize  int32
+}
+
+type LeasePendingOutboxEventsRow struct {
+	ID          uuid.UUID
+	AggregateID uuid.UUID
+	EventType   string
+	Payload     []byte
+	Attempts    int32
+}
+
+func (q *Queries) LeasePendingOutboxEvents(ctx context.Context, arg LeasePendingOutboxEventsParams) ([]LeasePendingOutboxEventsRow, error) {
+	rows, err := q.db.Query(ctx, leasePendingOutboxEvents, arg.LeaseUntil, arg.DueAt, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LeasePendingOutboxEventsRow
+	for rows.Next() {
+		var i LeasePendingOutboxEventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AggregateID,
+			&i.EventType,
+			&i.Payload,
+			&i.Attempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markOutboxEventPublished = `-- name: MarkOutboxEventPublished :execrows
+UPDATE outbox_events
+SET published_at = $1::timestamptz
+WHERE id = $2
+  AND published_at IS NULL
+`
+
+type MarkOutboxEventPublishedParams struct {
+	PublishedAt time.Time
+	ID          uuid.UUID
+}
+
+func (q *Queries) MarkOutboxEventPublished(ctx context.Context, arg MarkOutboxEventPublishedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markOutboxEventPublished, arg.PublishedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const rescheduleOutboxEvent = `-- name: RescheduleOutboxEvent :execrows
+UPDATE outbox_events
+SET attempts = $1,
+    next_attempt_at = $2::timestamptz
+WHERE id = $3
+  AND published_at IS NULL
+`
+
+type RescheduleOutboxEventParams struct {
+	Attempts      int32
+	NextAttemptAt time.Time
+	ID            uuid.UUID
+}
+
+func (q *Queries) RescheduleOutboxEvent(ctx context.Context, arg RescheduleOutboxEventParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rescheduleOutboxEvent, arg.Attempts, arg.NextAttemptAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
