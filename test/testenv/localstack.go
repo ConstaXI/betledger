@@ -22,6 +22,7 @@ import (
 
 	"github.com/davibanfi/betledger/internal/infrastructure/config"
 	"github.com/davibanfi/betledger/internal/infrastructure/messaging"
+	"github.com/davibanfi/betledger/internal/usecase"
 )
 
 // EventsQueueName is the events queue the provisioning script creates, the one
@@ -165,4 +166,141 @@ func (l *LocalStack) ReceiveEvents(t *testing.T, queueURL string, want int, time
 		}
 	}
 	return received
+}
+
+// WagerQueues is a pair of FIFO queues of a test's own, configured like the
+// wagering queue and its dead letter queue, with the same redrive policy.
+type WagerQueues struct {
+	Name          string
+	URL           string
+	DeadLetter    string
+	DeadLetterURL string
+}
+
+// Env is the configuration an application needs to consume from these queues,
+// with short waits so that a test does not linger.
+func (q WagerQueues) Env() []func(env map[string]string) {
+	return []func(env map[string]string){
+		WithEnv("WAGER_QUEUE_NAME", q.Name),
+		WithEnv("WAGER_DLQ_NAME", q.DeadLetter),
+		WithEnv("CONSUMER_WAIT_TIME", "1s"),
+		WithEnv("CONSUMER_VISIBILITY_TIMEOUT", "2s"),
+		WithEnv("CONSUMER_POLL_INTERVAL", "100ms"),
+	}
+}
+
+// CreateWagerQueues creates the wagering queue and its dead letter queue.
+func (l *LocalStack) CreateWagerQueues(t *testing.T) WagerQueues {
+	t.Helper()
+
+	ctx := context.Background()
+	queues := WagerQueues{
+		Name:       "wager-" + uuid.NewString() + ".fifo",
+		DeadLetter: "wager-dlq-" + uuid.NewString() + ".fifo",
+	}
+	deadLetter, err := l.Client.CreateQueue(ctx, &sqs.CreateQueueInput{
+		QueueName:  aws.String(queues.DeadLetter),
+		Attributes: map[string]string{string(types.QueueAttributeNameFifoQueue): "true"},
+	})
+	require.NoError(t, err)
+	queues.DeadLetterURL = aws.ToString(deadLetter.QueueUrl)
+
+	attributes, err := l.Client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
+		QueueUrl:       aws.String(queues.DeadLetterURL),
+		AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameQueueArn},
+	})
+	require.NoError(t, err)
+	redrive, err := json.Marshal(map[string]string{
+		"deadLetterTargetArn": attributes.Attributes[string(types.QueueAttributeNameQueueArn)],
+		"maxReceiveCount":     "5",
+	})
+	require.NoError(t, err)
+
+	queue, err := l.Client.CreateQueue(ctx, &sqs.CreateQueueInput{
+		QueueName: aws.String(queues.Name),
+		Attributes: map[string]string{
+			string(types.QueueAttributeNameFifoQueue):         "true",
+			string(types.QueueAttributeNameVisibilityTimeout): "2",
+			string(types.QueueAttributeNameRedrivePolicy):     string(redrive),
+		},
+	})
+	require.NoError(t, err)
+	queues.URL = aws.ToString(queue.QueueUrl)
+	return queues
+}
+
+// SendWagerMessage sends an operation to the queue in the envelope the
+// providers use, and returns the message identifier.
+func (l *LocalStack) SendWagerMessage(
+	t *testing.T,
+	queueURL, messageID string,
+	input usecase.ProcessWagerInput,
+) string {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]any{
+		"messageId":  messageID,
+		"type":       "WagerTransactionRequested",
+		"occurredAt": time.Now().UTC(),
+		"data": map[string]any{
+			"providerId":                     input.ProviderID,
+			"externalTransactionId":          input.ExternalTransactionID,
+			"idempotencyKey":                 input.IdempotencyKey,
+			"playerId":                       input.PlayerID,
+			"walletId":                       input.WalletID,
+			"roundId":                        input.RoundID,
+			"gameId":                         input.GameID,
+			"kind":                           input.Kind,
+			"money":                          input.Money,
+			"referenceExternalTransactionId": input.ReferenceExternalTransactionID,
+		},
+	})
+	require.NoError(t, err)
+	l.SendRawMessage(t, queueURL, input.WalletID.String(), body)
+	return messageID
+}
+
+// SendRawMessage sends the body as it is, for the messages a provider should
+// never send.
+func (l *LocalStack) SendRawMessage(t *testing.T, queueURL, groupID string, body []byte) {
+	t.Helper()
+
+	_, err := l.Client.SendMessage(context.Background(), &sqs.SendMessageInput{
+		QueueUrl:               aws.String(queueURL),
+		MessageBody:            aws.String(string(body)),
+		MessageGroupId:         aws.String(groupID),
+		MessageDeduplicationId: aws.String(uuid.NewString()),
+	})
+	require.NoError(t, err)
+}
+
+// ReceiveBodies reads and deletes messages until it has at least want of them
+// or the timeout runs out, and returns their bodies.
+func (l *LocalStack) ReceiveBodies(t *testing.T, queueURL string, want int, timeout time.Duration) []string {
+	t.Helper()
+
+	ctx := context.Background()
+	deadline := time.Now().Add(timeout)
+	var bodies []string
+	for len(bodies) < want || want == 0 {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		output, err := l.Client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
+			QueueUrl:            aws.String(queueURL),
+			MaxNumberOfMessages: 10,
+			WaitTimeSeconds:     int32(min(remaining, time.Second) / time.Second),
+		})
+		require.NoError(t, err)
+		for _, message := range output.Messages {
+			bodies = append(bodies, aws.ToString(message.Body))
+			_, err := l.Client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+				QueueUrl:      aws.String(queueURL),
+				ReceiptHandle: message.ReceiptHandle,
+			})
+			require.NoError(t, err)
+		}
+	}
+	return bodies
 }

@@ -125,6 +125,28 @@ type OutboxRepository interface {
 	ReschedulePublication(ctx context.Context, eventID domain.ID, attempts int, nextAttemptAt time.Time) error
 }
 
+// InboxMessage is a message the consumer already took in.
+type InboxMessage struct {
+	MessageID string
+	// PayloadHash is the hash of the business fields carried by the message,
+	// which tells a redelivery of the same message apart from another message
+	// reusing its identifier.
+	PayloadHash string
+	// TransactionID is the operation the message produced.
+	TransactionID domain.ID
+}
+
+// InboxRepository records the messages already taken in, so that a redelivery
+// is not processed again. Writes must run within a transaction, the same one
+// that applies the operation.
+type InboxRepository interface {
+	// Find returns the message already recorded, and false when there is none.
+	Find(ctx context.Context, messageID string) (InboxMessage, bool, error)
+	// Record stores the message. A message already recorded is reported as a
+	// domain conflict carrying FailureCodeIdempotencyConflict.
+	Record(ctx context.Context, message InboxMessage) error
+}
+
 // EventPublisher delivers recorded events to the outside world. The same event
 // may be delivered more than once, always with the same event id, which is how
 // consumers tell a republication apart.

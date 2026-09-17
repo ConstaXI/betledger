@@ -1,8 +1,9 @@
 // Command workers runs the background workers of betledger: the retry of
-// operations waiting for a reference and the publication of the outbox. It
-// composes its own dependencies with Fx and serves only health endpoints, and
-// several instances may run at once, because all coordination lives in the
-// database.
+// operations waiting for a reference, the publication of the outbox and it
+// consumes the operations sent to the wagering queue. It composes its own
+// dependencies with Fx and serves only health endpoints, and several instances
+// may run at once, because all coordination lives in the database and in the
+// queue.
 package main
 
 import (
@@ -42,14 +43,17 @@ func options() fx.Option {
 			newLogger,
 			newClock,
 			usecase.NewProcessWager,
+			usecase.NewProcessInboxMessage,
 			newReferenceRetryPolicy,
 			usecase.NewResolvePendingReferences,
 			newPublicationPolicy,
 			usecase.NewPublishOutbox,
 			messaging.NewClient,
 			fx.Annotate(messaging.NewEventPublisher, fx.As(fx.Self()), fx.As(new(usecase.EventPublisher))),
+			messaging.NewWagerConsumer,
 			fx.Annotate(newPostgresHealthCheck, fx.ResultTags(`group:"readiness"`)),
-			fx.Annotate(newSQSHealthCheck, fx.ResultTags(`group:"readiness"`)),
+			fx.Annotate(newEventsQueueHealthCheck, fx.ResultTags(`group:"readiness"`)),
+			fx.Annotate(newWagerQueueHealthCheck, fx.ResultTags(`group:"readiness"`)),
 		),
 		postgres.Module,
 		httpserver.HealthModule,
@@ -69,8 +73,12 @@ func newPostgresHealthCheck(pool *pgxpool.Pool) httpserver.HealthCheck {
 	return httpserver.HealthCheck{Name: "postgres", Check: pool.Ping}
 }
 
-func newSQSHealthCheck(publisher *messaging.EventPublisher) httpserver.HealthCheck {
-	return httpserver.HealthCheck{Name: "sqs", Check: publisher.Check}
+func newEventsQueueHealthCheck(publisher *messaging.EventPublisher) httpserver.HealthCheck {
+	return httpserver.HealthCheck{Name: "sqs-events", Check: publisher.Check}
+}
+
+func newWagerQueueHealthCheck(consumer *messaging.WagerConsumer) httpserver.HealthCheck {
+	return httpserver.HealthCheck{Name: "sqs-wagering", Check: consumer.Check}
 }
 
 func newReferenceRetryPolicy(cfg config.Config) usecase.ReferenceRetryPolicy {

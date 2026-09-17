@@ -32,8 +32,14 @@ func NewTransactor(pool *pgxpool.Pool) *Transactor {
 }
 
 // WithinTransaction begins a transaction, runs fn with it in the context, and
-// commits when fn succeeds. Any error from fn rolls the transaction back.
+// commits when fn succeeds. Any error from fn rolls the transaction back. A
+// call already inside a transaction joins it instead of opening another, so a
+// use case that composes others still commits everything at once.
 func (t *Transactor) WithinTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
+	if _, joined := ctx.Value(txKey{}).(pgx.Tx); joined {
+		return fn(ctx)
+	}
+
 	tx, err := t.pool.Begin(ctx)
 	if err != nil {
 		return translate(fmt.Errorf("begin transaction: %w", err))

@@ -399,3 +399,13 @@ func (p *Postgres) AbandonOutboxAfterPublishing(
 	}
 	return len(leased)
 }
+
+// InboxMessages counts the messages the consumer took in.
+func (p *Postgres) InboxMessages(t *testing.T) int {
+	t.Helper()
+
+	var count int
+	require.NoError(t, p.Pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM inbox_messages").Scan(&count))
+	return count
+}

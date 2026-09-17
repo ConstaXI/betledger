@@ -22,11 +22,13 @@ O projeto está em construção incremental. O que existe hoje:
   partir da mesma imagem, com as migrations aplicadas antes.
 - **Publicação de eventos** — um worker publica a outbox na fila FIFO
   `wallet-events.fifo`, no LocalStack, depois do commit, na ordem de cada carteira.
+- **Consumo por SQS** — as operações também chegam por `wager-transactions.fifo`,
+  com inbox por `messageId`, DLQ e o mesmo caso de uso do HTTP.
 - **Health checks** — liveness em `GET /health/live` e readiness em
   `GET /health/ready` nas duas aplicações: a API checa o banco e os workers
   checam o banco e o SQS.
 
-Ainda **não** existem: o consumidor SQS com inbox e DLQ e as rotas de leitura. A seção
+Ainda **não** existem: as rotas de leitura e a reconciliação. A seção
 [Próximos passos](#próximos-passos) lista a ordem prevista.
 
 ## Pré-requisitos
@@ -59,7 +61,7 @@ diferentes:
 | Serviço | O que faz | Porta |
 | --- | --- | --- |
 | `api` | atende `POST /wallets`, `POST /wagering/transactions` e os health checks; não fala com o broker | 8080 |
-| `workers` | retoma referências pendentes e publica a outbox | 8082, só health checks |
+| `workers` | retoma referências pendentes, publica a outbox e consome a fila de operações | 8082, só health checks |
 
 Vários workers podem rodar ao mesmo tempo, cada um tomando parte do trabalho:
 
@@ -114,6 +116,12 @@ make workers      # inicia os workers
 | `OUTBOX_RETRY_BASE_DELAY` | não | `1s` | Espera após a primeira publicação que falhou; dobra a cada nova |
 | `OUTBOX_RETRY_MAX_DELAY` | não | `1m` | Teto da espera entre publicações de um evento |
 | `OUTBOX_LEASE` | não | `30s` | Por quanto tempo um publisher reserva os eventos que tomou |
+| `WAGER_QUEUE_NAME` | não | `wager-transactions.fifo` | Fila FIFO de onde as operações são consumidas |
+| `WAGER_DLQ_NAME` | não | `wager-transactions-dlq.fifo` | Fila para onde vão as mensagens que não podem ser tratadas |
+| `CONSUMER_WAIT_TIME` | não | `20s` | Long polling do consumidor, entre `0s` e `20s` |
+| `CONSUMER_VISIBILITY_TIMEOUT` | não | `30s` | Quanto tempo a mensagem fica invisível, e prazo do seu tratamento |
+| `CONSUMER_BATCH_SIZE` | não | `10` | Mensagens por recebimento, entre 1 e 10 |
+| `CONSUMER_POLL_INTERVAL` | não | `1s` | Espera após um recebimento vazio |
 
 A configuração é validada na inicialização, e o banco é consultado antes de o
 servidor abrir a porta: sem `DATABASE_URL` ou `OIDC_ISSUER_URL`, com o banco
@@ -267,6 +275,51 @@ acabam.
 | `422` | Recusa de negócio, gravada como `REJECTED`, com `failureCode` no corpo do resultado; o replay responde igual |
 | `409` | `IDEMPOTENCY_CONFLICT`: chave reutilizada com outro corpo, ou operação reenviada com outra chave |
 | `404` | `WALLET_NOT_FOUND` |
+
+### Operações por SQS
+
+As operações chegam também pela fila FIFO `wager-transactions.fifo`, no mesmo
+envelope da spec:
+
+```json
+{
+  "messageId": "msg-123",
+  "type": "WagerTransactionRequested",
+  "occurredAt": "2026-09-08T12:00:00.000Z",
+  "data": {
+    "providerId": "provider-a",
+    "externalTransactionId": "transaction-123",
+    "idempotencyKey": "provider-a:transaction-123",
+    "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
+    "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
+    "roundId": "round-987",
+    "gameId": "fortune-chimp",
+    "kind": "BET",
+    "money": { "amount": "25.00", "currency": "BRL" }
+  }
+}
+```
+
+HTTP e SQS usam o mesmo caso de uso, então a mesma operação enviada pelos dois
+caminhos é aplicada uma vez só, pela chave de idempotência. Além disso:
+
+- **Inbox por `messageId`**, gravada no mesmo commit da operação: uma reentrega é
+  reconhecida e não reprocessa nada. O mesmo `messageId` com outro conteúdo é
+  tratado como erro permanente.
+- **A mensagem só é apagada depois do commit.** Se o processo morrer antes, a
+  mensagem volta e é tratada de novo.
+- **Falhas transitórias** (banco fora, por exemplo) deixam a mensagem na fila,
+  que a entrega de novo quando a visibilidade expira.
+- **Erros permanentes** — corpo malformado, tipo desconhecido, identificadores
+  inválidos, carteira inexistente, `messageId` reutilizado — vão para
+  `wager-transactions-dlq.fifo`, com o motivo no atributo `reason`. A fila ainda
+  tem `maxReceiveCount: 5` como rede de segurança.
+
+```sh
+docker compose exec localstack awslocal sqs send-message \
+  --queue-url http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/wager-transactions.fifo \
+  --message-group-id "$WALLET" --message-deduplication-id msg-123 --message-body "$MENSAGEM"
+```
 
 ### Eventos publicados
 

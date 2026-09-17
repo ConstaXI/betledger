@@ -114,6 +114,33 @@ a interrupção entre a publicação e a confirmação — a fila recebe cada ev
 vez —, e três publishers simultâneos, conferindo entrega única e ordem por
 carteira. Sem a regra do evento mais antigo por carteira, a ordem se perde.
 
+## Consumo por SQS
+
+**Implementado.** As operações chegam por HTTP e por `wager-transactions.fifo`, e
+os dois caminhos usam o mesmo `ProcessWager` — logo, as mesmas regras e a mesma
+idempotência financeira pela chave do provedor.
+
+- **Inbox por `messageId`.** O consumidor grava a mensagem na inbox **no mesmo
+  commit** da operação; para isso o `Transactor` reaproveita uma transação já
+  aberta no contexto, então um caso de uso que compõe outro ainda confirma tudo
+  de uma vez. Uma reentrega encontra a mensagem gravada e não reprocessa.
+  O `messageId` repetido com outro conteúdo é conflito permanente, detectado pelo
+  hash canônico do payload — o mesmo usado na idempotência do HTTP.
+- **Remoção só depois do commit.** Morrer entre o commit e a remoção faz a
+  mensagem voltar; a inbox reconhece a reentrega. O contrário — remover antes de
+  confirmar — perderia a operação.
+- **Transitório versus permanente.** Indisponibilidade deixa a mensagem na fila
+  para nova entrega; erro permanente (corpo inválido, tipo desconhecido, carteira
+  inexistente, `messageId` reutilizado) vai para a DLQ com o motivo, para não
+  bloquear o grupo FIFO. A `maxReceiveCount: 5` da fila continua como rede de
+  segurança para o que escapar dessa classificação.
+- **Prazo por mensagem.** O tratamento é limitado pelo visibility timeout, porque
+  passado ele a mensagem é entregue de novo de qualquer jeito. O relato do
+  desfecho à fila usa prazo próprio: sem isso, um tratamento que estoura o prazo
+  não conseguiria nem apagar a mensagem nem mandá-la para a DLQ.
+- **Encerramento.** No `SIGTERM` o consumidor para de buscar e conclui a mensagem
+  em andamento; se o prazo acabar, ela volta para a fila em vez de ser perdida.
+
 ## Persistência e fronteira transacional
 
 **Implementado.** PostgreSQL acessado com `pgx`, e SQL explícito com código
@@ -341,5 +368,4 @@ resposta é `503`, que o cliente pode repetir com segurança graças à idempot�
 
 ## Trabalho não concluído
 
-- **Consumidor SQS** com inbox e DLQ.
 - **Reconciliação** e **observabilidade** além dos logs JSON.

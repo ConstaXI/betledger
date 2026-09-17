@@ -10,6 +10,7 @@ import (
 	"go.uber.org/fx"
 
 	"github.com/davibanfi/betledger/internal/infrastructure/config"
+	"github.com/davibanfi/betledger/internal/infrastructure/messaging"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
@@ -22,6 +23,9 @@ var Module = fx.Module("worker",
 		},
 		func(lc fx.Lifecycle, uc *usecase.PublishOutbox, cfg config.Config, logger *slog.Logger) {
 			newPoller(lc, "outbox publisher", uc, cfg.OutboxPollInterval, logger)
+		},
+		func(lc fx.Lifecycle, consumer *messaging.WagerConsumer, cfg config.Config, logger *slog.Logger) {
+			newPoller(lc, "wagering consumer", consumer, cfg.ConsumerPollInterval, logger)
 		},
 	),
 )

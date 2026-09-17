@@ -52,6 +52,21 @@ type Config struct {
 	// OutboxLease is how long a publisher holds the events it took before
 	// another publisher may take them.
 	OutboxLease time.Duration
+	// WagerQueueName is the FIFO queue the providers send operations to.
+	WagerQueueName string
+	// WagerDeadLetterQueueName receives the messages that cannot be handled.
+	WagerDeadLetterQueueName string
+	// ConsumerWaitTime is how long a receive waits for messages before coming
+	// back empty, which is the long polling of SQS.
+	ConsumerWaitTime time.Duration
+	// ConsumerVisibilityTimeout is how long a taken message stays hidden from
+	// other consumers; it must cover the handling of a message.
+	ConsumerVisibilityTimeout time.Duration
+	// ConsumerBatchSize is how many messages a receive takes at most.
+	ConsumerBatchSize int
+	// ConsumerPollInterval is how long the consumer waits after an empty
+	// receive before asking again.
+	ConsumerPollInterval time.Duration
 }
 
 // Load reads the configuration from the environment and fails when a required
@@ -76,6 +91,13 @@ func Load() (Config, error) {
 		OutboxRetryBaseDelay:    durationOrDefault("OUTBOX_RETRY_BASE_DELAY", time.Second, &errs),
 		OutboxRetryMaxDelay:     durationOrDefault("OUTBOX_RETRY_MAX_DELAY", time.Minute, &errs),
 		OutboxLease:             durationOrDefault("OUTBOX_LEASE", 30*time.Second, &errs),
+
+		WagerQueueName:            envOrDefault("WAGER_QUEUE_NAME", "wager-transactions.fifo"),
+		WagerDeadLetterQueueName:  envOrDefault("WAGER_DLQ_NAME", "wager-transactions-dlq.fifo"),
+		ConsumerWaitTime:          durationOrDefault("CONSUMER_WAIT_TIME", 20*time.Second, &errs),
+		ConsumerVisibilityTimeout: durationOrDefault("CONSUMER_VISIBILITY_TIMEOUT", 30*time.Second, &errs),
+		ConsumerBatchSize:         intOrDefault("CONSUMER_BATCH_SIZE", 10, &errs),
+		ConsumerPollInterval:      durationOrDefault("CONSUMER_POLL_INTERVAL", time.Second, &errs),
 	}
 	errs = append(errs, cfg.validate())
 	if err := errors.Join(errs...); err != nil {
@@ -115,6 +137,18 @@ func (c Config) validate() error {
 	}
 	if c.OutboxLease <= 0 || c.OutboxPollInterval <= 0 {
 		errs = append(errs, errors.New("OUTBOX_LEASE and OUTBOX_POLL_INTERVAL must be positive"))
+	}
+	if c.WagerQueueName == "" || c.WagerDeadLetterQueueName == "" {
+		errs = append(errs, errors.New("WAGER_QUEUE_NAME and WAGER_DLQ_NAME cannot be empty"))
+	}
+	if c.ConsumerWaitTime < 0 || c.ConsumerWaitTime > 20*time.Second {
+		errs = append(errs, errors.New("CONSUMER_WAIT_TIME must be between 0s and 20s"))
+	}
+	if c.ConsumerVisibilityTimeout <= 0 || c.ConsumerPollInterval <= 0 {
+		errs = append(errs, errors.New("CONSUMER_VISIBILITY_TIMEOUT and CONSUMER_POLL_INTERVAL must be positive"))
+	}
+	if c.ConsumerBatchSize < 1 || c.ConsumerBatchSize > 10 {
+		errs = append(errs, errors.New("CONSUMER_BATCH_SIZE must be between 1 and 10"))
 	}
 	return errors.Join(errs...)
 }

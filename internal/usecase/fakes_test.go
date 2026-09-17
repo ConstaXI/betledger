@@ -25,6 +25,7 @@ type fakeStore struct {
 	nextAttempts map[domain.ID]time.Time
 	published    map[domain.ID]time.Time
 	publications map[domain.ID]int
+	inbox        map[string]usecase.InboxMessage
 	entries      []*ledger.Entry
 	events       []event.Event
 	eventTypes   []event.Type
@@ -47,6 +48,7 @@ func newFakeStore() fakeStore {
 		nextAttempts: map[domain.ID]time.Time{},
 		published:    map[domain.ID]time.Time{},
 		publications: map[domain.ID]int{},
+		inbox:        map[string]usecase.InboxMessage{},
 	}
 }
 
@@ -59,6 +61,9 @@ func newFakeTransactor(wallets ...*wallet.Wallet) *fakeTransactor {
 }
 
 func (f *fakeTransactor) WithinTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
+	if _, joined := ctx.Value(fakeTxKey{}).(*fakeTransaction); joined {
+		return fn(ctx)
+	}
 	f.calls++
 	staged := newFakeStore()
 	tx := &fakeTransaction{committed: &f.committed, staged: &staged}
@@ -82,6 +87,9 @@ func (f *fakeTransactor) WithinTransaction(ctx context.Context, fn func(ctx cont
 	}
 	for id, attempts := range tx.staged.publications {
 		f.committed.publications[id] = attempts
+	}
+	for id, message := range tx.staged.inbox {
+		f.committed.inbox[id] = message
 	}
 	f.committed.entries = append(f.committed.entries, tx.staged.entries...)
 	f.committed.events = append(f.committed.events, tx.staged.events...)
@@ -380,5 +388,29 @@ func (f *fakePublisher) Publish(_ context.Context, record usecase.OutboxRecord) 
 		return usecase.ErrUnavailable
 	}
 	f.published = append(f.published, record)
+	return nil
+}
+
+type fakeInbox struct{}
+
+func (fakeInbox) Find(ctx context.Context, messageID string) (usecase.InboxMessage, bool, error) {
+	tx, err := transactionFrom(ctx)
+	if err != nil {
+		return usecase.InboxMessage{}, false, err
+	}
+	message, found := tx.committed.inbox[messageID]
+	return message, found, nil
+}
+
+func (fakeInbox) Record(ctx context.Context, message usecase.InboxMessage) error {
+	tx, err := transactionFrom(ctx)
+	if err != nil {
+		return err
+	}
+	if _, found := tx.committed.inbox[message.MessageID]; found {
+		return domain.ConflictError(domain.FailureCodeIdempotencyConflict,
+			"message %q was already taken in", message.MessageID)
+	}
+	tx.staged.inbox[message.MessageID] = message
 	return nil
 }

@@ -116,6 +116,13 @@ func TestSchemaEnforcesFinancialInvariants(t *testing.T) {
 			wantCode: checkViolation,
 		},
 		{
+			name: "should return unique_violation when a message is taken into the inbox twice",
+			sql: `INSERT INTO inbox_messages (message_id, payload_hash, transaction_id)
+				VALUES ('schema-message', 'hash', $1), ('schema-message', 'hash', $1)`,
+			args:     []any{openingID},
+			wantCode: uniqueViolation,
+		},
+		{
 			name:     "should return restrict_violation when an outbox payload is changed",
 			sql:      `UPDATE outbox_events SET payload = '{}' WHERE id = $1`,
 			args:     []any{eventID},
