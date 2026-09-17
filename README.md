@@ -23,7 +23,7 @@ O projeto está em construção incremental. O que existe hoje:
 - **Publicação de eventos** — um worker publica a outbox na fila FIFO
   `wallet-events.fifo`, no LocalStack, depois do commit, na ordem de cada carteira.
 - **Health checks** — liveness em `GET /health/live` e readiness, que checa o
-  banco e o SQS, em `GET /health/ready`.
+  banco, em `GET /health/ready`.
 
 Ainda **não** existem: o consumidor SQS com inbox e DLQ e as rotas de leitura. A seção
 [Próximos passos](#próximos-passos) lista a ordem prevista.
@@ -57,7 +57,7 @@ diferentes:
 
 | Serviço | O que faz | Porta |
 | --- | --- | --- |
-| `api` | atende `POST /wallets`, `POST /wagering/transactions` e os health checks | 8080 |
+| `api` | atende `POST /wallets`, `POST /wagering/transactions` e os health checks; não fala com o broker | 8080 |
 | `workers` | retoma referências pendentes e publica a outbox | nenhuma |
 
 Vários workers podem rodar ao mesmo tempo, cada um tomando parte do trabalho:
@@ -104,7 +104,7 @@ make workers      # inicia os workers
 | `REFERENCE_RETRY_MAX_DELAY` | não | `5m` | Teto da espera entre tentativas |
 | `REFERENCE_RETRY_LEASE` | não | `30s` | Por quanto tempo um worker reserva as operações que tomou |
 | `REFERENCE_POLL_INTERVAL` | não | `1s` | Intervalo com que o worker ocioso procura operações vencidas |
-| `AWS_REGION` | não | `us-east-1` | Região da AWS |
+| `AWS_REGION` | não | `us-east-1` | Região da AWS; só os workers usam as variáveis da AWS |
 | `AWS_ENDPOINT_URL` | não | — | Endpoint da AWS; aponta para o LocalStack localmente |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | sim | — | Credenciais da AWS; qualquer valor no LocalStack |
 | `EVENTS_QUEUE_NAME` | não | `wallet-events.fifo` | Fila FIFO que recebe os eventos publicados |

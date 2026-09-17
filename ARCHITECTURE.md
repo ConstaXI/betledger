@@ -103,6 +103,12 @@ enxerga linhas já confirmadas.
 - **Roteamento.** `MessageGroupId` é a carteira, então consumidores processam os
   eventos de uma carteira em ordem e carteiras diferentes em paralelo. O corpo da
   mensagem é o snapshot gravado, byte a byte.
+- **A API não toca no broker.** Ela grava na outbox, dentro do mesmo commit, e só
+  os workers publicam. Por isso o readiness da API checa apenas o PostgreSQL, e
+  não o SQS como a seção 9 da spec sugere: com o broker fora do ar a API continua
+  aceitando operações, que ficam na outbox até o broker voltar — exatamente o que
+  o padrão promete. O SQS volta ao readiness quando existir o consumidor, que é
+  quem depende dele de verdade.
 
 Os testes com LocalStack real cobrem a interrupção entre o commit e a publicação,
 a interrupção entre a publicação e a confirmação — a fila recebe cada evento uma

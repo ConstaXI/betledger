@@ -74,12 +74,3 @@ func (p *EventPublisher) Publish(ctx context.Context, record usecase.OutboxRecor
 	}
 	return nil
 }
-
-// Check reports whether the events queue can be reached.
-func (p *EventPublisher) Check(ctx context.Context) error {
-	_, err := p.client.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
-		QueueUrl:       aws.String(p.queueURL),
-		AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameApproximateNumberOfMessages},
-	})
-	return err
-}

@@ -1,6 +1,7 @@
 // Command api serves the HTTP endpoints of betledger. It composes its own
 // dependencies with Fx and runs no background worker, so that serving requests
-// and draining work scale apart.
+// and draining work scale apart. It never reaches the broker: events are
+// recorded in the outbox, within the same commit, and published by the workers.
 package main
 
 import (
@@ -15,7 +16,6 @@ import (
 	"github.com/davibanfi/betledger/internal/infrastructure/auth"
 	"github.com/davibanfi/betledger/internal/infrastructure/config"
 	"github.com/davibanfi/betledger/internal/infrastructure/httpserver"
-	"github.com/davibanfi/betledger/internal/infrastructure/messaging"
 	"github.com/davibanfi/betledger/internal/infrastructure/postgres"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
@@ -34,11 +34,8 @@ func options() fx.Option {
 			newClock,
 			usecase.NewOpenWallet,
 			usecase.NewProcessWager,
-			messaging.NewClient,
-			fx.Annotate(messaging.NewEventPublisher, fx.As(fx.Self()), fx.As(new(usecase.EventPublisher))),
 			fx.Annotate(auth.NewTokenVerifier, fx.As(new(httpserver.TokenVerifier))),
 			fx.Annotate(newPostgresHealthCheck, fx.ResultTags(`group:"readiness"`)),
-			fx.Annotate(newSQSHealthCheck, fx.ResultTags(`group:"readiness"`)),
 		),
 		postgres.Module,
 		httpserver.Module,
@@ -55,8 +52,4 @@ func newClock() usecase.Clock {
 
 func newPostgresHealthCheck(pool *pgxpool.Pool) httpserver.HealthCheck {
 	return httpserver.HealthCheck{Name: "postgres", Check: pool.Ping}
-}
-
-func newSQSHealthCheck(publisher *messaging.EventPublisher) httpserver.HealthCheck {
-	return httpserver.HealthCheck{Name: "sqs", Check: publisher.Check}
 }
