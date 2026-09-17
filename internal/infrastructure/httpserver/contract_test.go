@@ -19,6 +19,7 @@ import (
 	"github.com/davibanfi/betledger/api"
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/money"
+	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
@@ -39,14 +40,29 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 	healthy := HealthCheck{Name: "postgres", Check: func(context.Context) error { return nil }}
 	failing := HealthCheck{Name: "postgres", Check: func(context.Context) error { return errors.New("down") }}
 
+	processed := usecase.WagerResult{
+		TransactionID: domain.NewID(),
+		State:         wager.StateProcessed,
+		Balance:       money.MustNew(97500, money.MustCurrency("BRL")),
+	}
+	replayed := processed
+	replayed.IdempotentReplay = true
+	rejected := usecase.WagerResult{
+		TransactionID: domain.NewID(),
+		State:         wager.StateRejected,
+		FailureCode:   domain.FailureCodeInsufficientFunds,
+	}
+
 	tests := []struct {
-		name       string
-		method     string
-		path       string
-		body       string
-		openerErr  error
-		checks     []HealthCheck
-		wantStatus int
+		name           string
+		method         string
+		path           string
+		body           string
+		idempotencyKey string
+		wagerResult    usecase.WagerResult
+		useCaseErr     error
+		checks         []HealthCheck
+		wantStatus     int
 	}{
 		{
 			name:       "should match the contract when a wallet is opened",
@@ -74,7 +90,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			method:     http.MethodPost,
 			path:       "/wallets",
 			body:       validBody,
-			openerErr:  domain.ConflictError(domain.FailureCodeWalletAlreadyExists, "wallet already exists"),
+			useCaseErr: domain.ConflictError(domain.FailureCodeWalletAlreadyExists, "wallet already exists"),
 			wantStatus: http.StatusConflict,
 		},
 		{
@@ -82,7 +98,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			method:     http.MethodPost,
 			path:       "/wallets",
 			body:       validBody,
-			openerErr:  usecase.ErrUnavailable,
+			useCaseErr: usecase.ErrUnavailable,
 			wantStatus: http.StatusServiceUnavailable,
 		},
 		{
@@ -90,8 +106,69 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			method:     http.MethodPost,
 			path:       "/wallets",
 			body:       validBody,
-			openerErr:  errors.New("boom"),
+			useCaseErr: errors.New("boom"),
 			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:           "should match the contract when an operation is applied",
+			method:         http.MethodPost,
+			path:           "/wagering/transactions",
+			body:           validWagerBody,
+			idempotencyKey: "provider-a:transaction-123",
+			wagerResult:    processed,
+			wantStatus:     http.StatusCreated,
+		},
+		{
+			name:           "should match the contract when an operation is replayed",
+			method:         http.MethodPost,
+			path:           "/wagering/transactions",
+			body:           validWagerBody,
+			idempotencyKey: "provider-a:transaction-123",
+			wagerResult:    replayed,
+			wantStatus:     http.StatusOK,
+		},
+		{
+			name:           "should match the contract when an operation is rejected",
+			method:         http.MethodPost,
+			path:           "/wagering/transactions",
+			body:           validWagerBody,
+			idempotencyKey: "provider-a:transaction-123",
+			wagerResult:    rejected,
+			wantStatus:     http.StatusUnprocessableEntity,
+		},
+		{
+			name:       "should match the contract when the idempotency key is missing",
+			method:     http.MethodPost,
+			path:       "/wagering/transactions",
+			body:       validWagerBody,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "should match the contract when the wallet of the operation does not exist",
+			method:         http.MethodPost,
+			path:           "/wagering/transactions",
+			body:           validWagerBody,
+			idempotencyKey: "provider-a:transaction-123",
+			useCaseErr:     domain.NotFoundError(domain.FailureCodeWalletNotFound, "wallet not found"),
+			wantStatus:     http.StatusNotFound,
+		},
+		{
+			name:           "should match the contract when the idempotency key conflicts",
+			method:         http.MethodPost,
+			path:           "/wagering/transactions",
+			body:           validWagerBody,
+			idempotencyKey: "provider-a:transaction-123",
+			useCaseErr:     domain.ConflictError(domain.FailureCodeIdempotencyConflict, "conflict"),
+			wantStatus:     http.StatusConflict,
+		},
+		{
+			name:           "should match the contract when the database is unavailable for an operation",
+			method:         http.MethodPost,
+			path:           "/wagering/transactions",
+			body:           validWagerBody,
+			idempotencyKey: "provider-a:transaction-123",
+			useCaseErr:     usecase.ErrUnavailable,
+			wantStatus:     http.StatusServiceUnavailable,
 		},
 		{
 			name:       "should match the contract when the process is alive",
@@ -119,14 +196,19 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			opener := &fakeWalletOpener{wallet: opened, err: test.openerErr}
+			opener := &fakeWalletOpener{wallet: opened, err: test.useCaseErr}
+			processor := &fakeWagerProcessor{result: test.wagerResult, err: test.useCaseErr}
 			handler := NewHandler(
-				[]Route{&WalletHandler{openWallet: opener, logger: slog.New(slog.DiscardHandler)}},
+				[]Route{
+					&WalletHandler{openWallet: opener, logger: slog.New(slog.DiscardHandler)},
+					&WageringHandler{processWager: processor, logger: slog.New(slog.DiscardHandler)},
+				},
 				test.checks,
 				slog.New(slog.DiscardHandler),
 			)
 			request := httptest.NewRequest(test.method, "http://localhost:8080"+test.path, strings.NewReader(test.body))
 			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set(IdempotencyKeyHeader, test.idempotencyKey)
 			recorder := httptest.NewRecorder()
 
 			handler.ServeHTTP(recorder, request)

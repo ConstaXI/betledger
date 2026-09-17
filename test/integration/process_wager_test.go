@@ -203,3 +203,35 @@ func TestProcessWagerReportsIdempotencyConflicts(t *testing.T) {
 	assert.Equal(t, int64(7500), balance)
 	assert.Equal(t, 1, debits)
 }
+
+func TestProcessWagerSettlesWinsAndLosses(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	brl := money.MustCurrency("BRL")
+	w := useCases.MustOpenWallet(t, money.MustNew(10000, brl))
+
+	bet, err := useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "bet", 2500))
+	require.NoError(t, err)
+	win, err := useCases.ProcessWager.Execute(ctx, testenv.WagerInput(w, wager.KindWin, "win", 4000))
+	require.NoError(t, err)
+	loss, err := useCases.ProcessWager.Execute(ctx, testenv.WagerInput(w, wager.KindLoss, "loss", 0))
+	require.NoError(t, err)
+	replayedLoss, err := useCases.ProcessWager.Execute(ctx, testenv.WagerInput(w, wager.KindLoss, "loss", 0))
+	require.NoError(t, err)
+
+	assert.Equal(t, money.MustNew(7500, brl), bet.Balance)
+	assert.Equal(t, money.MustNew(11500, brl), win.Balance)
+	assert.Equal(t, wager.StateProcessed, loss.State)
+	assert.Equal(t, money.MustNew(11500, brl), loss.Balance)
+	assert.Equal(t, loss.TransactionID, replayedLoss.TransactionID)
+	assert.True(t, replayedLoss.IdempotentReplay)
+
+	balance, version, debits := database.WalletState(t, w.ID())
+	assert.Equal(t, int64(11500), balance)
+	assert.Equal(t, int64(3), version, "a loss does not change the wallet version")
+	assert.Equal(t, 1, debits)
+	database.AssertLedgerReconciles(t, w.ID())
+	assert.Equal(t, map[string]int{"WagerTransactionProcessed": 4, "WalletBalanceChanged": 3},
+		database.EventCounts(t, w.ID()))
+}

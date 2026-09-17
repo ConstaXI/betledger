@@ -3,7 +3,9 @@
 package testenv
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/davibanfi/betledger/internal/app"
 	"github.com/davibanfi/betledger/internal/infrastructure/config"
+	"github.com/davibanfi/betledger/internal/usecase"
 )
 
 // Application is the real application, composed by Fx and listening on a free
@@ -92,6 +95,53 @@ func (a *Application) OpenWallet(t *testing.T, playerID string) int {
 	require.NoError(t, err)
 	defer response.Body.Close()
 	return response.StatusCode
+}
+
+// WagerResponse is the body answered to an operation.
+type WagerResponse struct {
+	TransactionID string `json:"transactionId"`
+	Status        string `json:"status"`
+	// Balance is left empty when the response has none.
+	Balance struct {
+		Amount   string `json:"amount"`
+		Currency string `json:"currency"`
+	} `json:"balance"`
+	FailureCode      string `json:"failureCode"`
+	IdempotentReplay bool   `json:"idempotentReplay"`
+	Error            struct {
+		Code string `json:"code"`
+	} `json:"error"`
+}
+
+// SendWager posts the operation to /wagering/transactions and returns the
+// status and the decoded body.
+func (a *Application) SendWager(t *testing.T, input usecase.ProcessWagerInput) (int, WagerResponse) {
+	t.Helper()
+
+	payload, err := json.Marshal(map[string]any{
+		"providerId":                     input.ProviderID,
+		"externalTransactionId":          input.ExternalTransactionID,
+		"playerId":                       input.PlayerID,
+		"walletId":                       input.WalletID,
+		"roundId":                        input.RoundID,
+		"gameId":                         input.GameID,
+		"kind":                           input.Kind,
+		"money":                          input.Money,
+		"referenceExternalTransactionId": input.ReferenceExternalTransactionID,
+	})
+	require.NoError(t, err)
+	request, err := http.NewRequest(http.MethodPost, a.BaseURL+"/wagering/transactions", bytes.NewReader(payload))
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", input.IdempotencyKey)
+	request.Header.Set("X-Correlation-Id", input.CorrelationID)
+
+	response, err := httpClient().Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	var body WagerResponse
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&body))
+	return response.StatusCode, body
 }
 
 func httpClient() *http.Client {

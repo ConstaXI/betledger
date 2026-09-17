@@ -73,31 +73,41 @@ func (w *Wallet) Debit(amount money.Money, transactionID domain.ID) (*ledger.Ent
 	return w.move(amount, transactionID, ledger.Debit)
 }
 
-// ApplyBet debits a BET placed on this wallet. Refusals — a player who does not
-// own the wallet, another currency or insufficient funds — are errors of class
-// domain.ErrRejected, meant to be recorded rather than rolled back. A
-// transaction that is not a BET of this wallet is a validation error.
-func (w *Wallet) ApplyBet(bet *wager.Transaction) (*ledger.Entry, error) {
-	if bet == nil {
+// Apply moves the wallet as the operation demands: a BET debits, a WIN credits
+// and a LOSS moves nothing, returning a nil entry. Refusals — a player who does
+// not own the wallet, another currency or insufficient funds — are errors of
+// class domain.ErrRejected, meant to be recorded rather than rolled back. An
+// operation of another wallet, or a reversal, which needs its reference
+// resolved first, is a validation error.
+func (w *Wallet) Apply(operation *wager.Transaction) (*ledger.Entry, error) {
+	if operation == nil {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "transaction is required")
 	}
-	if bet.Kind() != wager.KindBet {
+	if operation.WalletID() != w.id {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput,
-			"expected a %s, got %s", wager.KindBet, bet.Kind())
+			"transaction %s belongs to wallet %s, not %s", operation.ID(), operation.WalletID(), w.id)
 	}
-	if bet.WalletID() != w.id {
+	if operation.Kind() != wager.KindBet && operation.Kind() != wager.KindWin && operation.Kind() != wager.KindLoss {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput,
-			"transaction %s belongs to wallet %s, not %s", bet.ID(), bet.WalletID(), w.id)
+			"%s cannot be applied without resolving its reference", operation.Kind())
 	}
-	if bet.PlayerID() != w.playerID {
+	if operation.PlayerID() != w.playerID {
 		return nil, domain.RejectionError(domain.FailureCodeWalletPlayerMismatch,
-			"player %s does not own wallet %s", bet.PlayerID(), w.id)
+			"player %s does not own wallet %s", operation.PlayerID(), w.id)
 	}
-	if bet.Money().Currency() != w.Currency() {
+	if operation.Money().Currency() != w.Currency() {
 		return nil, domain.RejectionError(domain.FailureCodeCurrencyMismatch,
-			"wallet %s holds %s, not %s", w.id, w.Currency(), bet.Money().Currency())
+			"wallet %s holds %s, not %s", w.id, w.Currency(), operation.Money().Currency())
 	}
-	return w.Debit(bet.Money(), bet.ID())
+
+	switch operation.Kind() {
+	case wager.KindBet:
+		return w.Debit(operation.Money(), operation.ID())
+	case wager.KindWin:
+		return w.Credit(operation.Money(), operation.ID())
+	default:
+		return nil, nil
+	}
 }
 
 func (w *Wallet) move(amount money.Money, transactionID domain.ID, direction ledger.Direction) (*ledger.Entry, error) {

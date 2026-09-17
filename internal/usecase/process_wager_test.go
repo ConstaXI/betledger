@@ -97,9 +97,66 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 1,
 		},
 		{
-			name:              "should return TRANSACTION_KIND_NOT_ALLOWED when the kind is not supported yet",
+			name:              "should accept when a win credits the wallet",
 			mutate:            func(input *usecase.ProcessWagerInput) { input.Kind = wager.KindWin },
+			wantState:         wager.StateProcessed,
+			wantBalance:       money.MustNew(12500, brl),
+			wantWalletBalance: money.MustNew(12500, brl),
+			wantWalletVersion: 2,
+			wantTransactions:  1,
+			wantEntries:       1,
+			wantEventTypes:    []event.Type{event.TypeWagerTransactionProcessed, event.TypeWalletBalanceChanged},
+		},
+		{
+			name: "should accept when a loss records the round without moving the balance",
+			mutate: func(input *usecase.ProcessWagerInput) {
+				input.Kind = wager.KindLoss
+				input.Money = money.MustNew(0, brl)
+			},
+			wantState:         wager.StateProcessed,
+			wantBalance:       money.MustNew(10000, brl),
+			wantWalletBalance: money.MustNew(10000, brl),
+			wantWalletVersion: 1,
+			wantTransactions:  1,
+			wantEventTypes:    []event.Type{event.TypeWagerTransactionProcessed},
+		},
+		{
+			name: "should return CURRENCY_MISMATCH when a loss is in another currency",
+			mutate: func(input *usecase.ProcessWagerInput) {
+				input.Kind = wager.KindLoss
+				input.Money = money.MustNew(0, money.MustCurrency("USD"))
+			},
+			wantState:         wager.StateRejected,
+			wantFailureCode:   domain.FailureCodeCurrencyMismatch,
+			wantWalletBalance: money.MustNew(10000, brl),
+			wantWalletVersion: 1,
+			wantTransactions:  1,
+			wantEventTypes:    []event.Type{event.TypeWagerTransactionRejected},
+		},
+		{
+			name: "should return TRANSACTION_KIND_NOT_ALLOWED when a win references another operation",
+			mutate: func(input *usecase.ProcessWagerInput) {
+				input.Kind = wager.KindWin
+				input.ReferenceExternalTransactionID = "transaction-122"
+			},
 			wantErr:           domain.FailureCodeKindNotAllowed,
+			wantWalletBalance: money.MustNew(10000, brl),
+			wantWalletVersion: 1,
+		},
+		{
+			name: "should return TRANSACTION_KIND_NOT_ALLOWED when the kind is a reversal",
+			mutate: func(input *usecase.ProcessWagerInput) {
+				input.Kind = wager.KindRefund
+				input.ReferenceExternalTransactionID = "transaction-122"
+			},
+			wantErr:           domain.FailureCodeKindNotAllowed,
+			wantWalletBalance: money.MustNew(10000, brl),
+			wantWalletVersion: 1,
+		},
+		{
+			name:              "should return INVALID_AMOUNT when a loss carries an amount",
+			mutate:            func(input *usecase.ProcessWagerInput) { input.Kind = wager.KindLoss },
+			wantErr:           domain.FailureCodeInvalidAmount,
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantWalletVersion: 1,
 		},

@@ -27,6 +27,7 @@ func Options() fx.Option {
 			newLogger,
 			newClock,
 			usecase.NewOpenWallet,
+			usecase.NewProcessWager,
 			fx.Annotate(newPostgresHealthCheck, fx.ResultTags(`group:"readiness"`)),
 		),
 		postgres.Module,

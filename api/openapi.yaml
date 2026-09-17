@@ -21,6 +21,7 @@ servers:
 
 tags:
   - name: Wallets
+  - name: Wagering
   - name: Health
 
 paths:
@@ -85,6 +86,138 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /wagering/transactions:
+    post:
+      tags: [Wagering]
+      operationId: processWager
+      summary: Send an operation from a game provider
+      description: |
+        Applies a `BET`, `WIN` or `LOSS` to the wallet. A `BET` debits, a `WIN`
+        credits and a `LOSS`, whose amount must be zero, records the round
+        without moving the balance. A `WIN` with `referenceExternalTransactionId`
+        and the reversals `REFUND` and `ROLLBACK` are not supported yet and answer
+        `400 TRANSACTION_KIND_NOT_ALLOWED`.
+
+        The operation, its ledger entry and its events are committed together,
+        under a lock on the wallet, so concurrent operations on the same wallet
+        are applied one at a time.
+
+        **Idempotency.** Sending the same `Idempotency-Key` with an equivalent
+        body returns the persisted result with `idempotentReplay: true`, including
+        the balance observed originally, without applying anything again. The
+        body is compared through a SHA-256 hash of its business fields in
+        canonical JSON; the key and `X-Correlation-Id` are not part of it. Reusing
+        the key with a different body, or resending the same
+        `(providerId, externalTransactionId)` under another key, answers `409`.
+
+        **Business refusals** — insufficient funds, a player who does not own the
+        wallet, another currency — are persisted as `REJECTED` and answered with
+        `422` and the result body, so that a retry returns the same outcome.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcessWagerRequest'
+            example:
+              providerId: provider-a
+              externalTransactionId: transaction-123
+              playerId: 0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1
+              walletId: 0192f291-27dd-7d3f-8071-5f8685deef37
+              roundId: round-987
+              gameId: fortune-chimp
+              kind: BET
+              money:
+                amount: '25.00'
+                currency: BRL
+      responses:
+        '201':
+          description: Operation applied now.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WagerResult'
+              example:
+                transactionId: 0192f298-345e-7e38-af88-e43f851a819d
+                status: PROCESSED
+                balance:
+                  amount: '975.00'
+                  currency: BRL
+                idempotentReplay: false
+        '200':
+          description: Replay of an operation already applied; nothing was applied again.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WagerResult'
+              example:
+                transactionId: 0192f298-345e-7e38-af88-e43f851a819d
+                status: PROCESSED
+                balance:
+                  amount: '975.00'
+                  currency: BRL
+                idempotentReplay: true
+        '400':
+          $ref: '#/components/responses/InvalidInput'
+        '404':
+          description: The wallet does not exist.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: WALLET_NOT_FOUND
+                  message: wallet 0192f291-27dd-7d3f-8071-5f8685deef37 not found
+        '409':
+          description: |
+            The key was already used with a different body, or the operation was
+            already sent under another key.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: IDEMPOTENCY_CONFLICT
+                  message: idempotency key "provider-a:transaction-123" was already used with a different payload
+        '422':
+          description: |
+            The operation was refused by a business rule and persisted as
+            `REJECTED`. Replays of it answer the same way, with
+            `idempotentReplay: true`.
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WagerResult'
+              example:
+                transactionId: 0192f298-345e-7e38-af88-e43f851a819d
+                status: REJECTED
+                failureCode: INSUFFICIENT_FUNDS
+                idempotentReplay: false
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /health/live:
     get:
       tags: [Health]
@@ -139,6 +272,19 @@ components:
         type: string
         pattern: '^[A-Za-z0-9._-]{1,128}$'
         example: req-123
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Identifies retries of the same operation within the provider. It may be
+        built as `{providerId}:{externalTransactionId}`, but the server never
+        replaces it with a computed one.
+      schema:
+        type: string
+        minLength: 1
+        example: provider-a:transaction-123
 
   headers:
     CorrelationId:
@@ -259,6 +405,61 @@ components:
           minimum: 1
           description: Starts at 1 and increments on each balance change.
 
+    ProcessWagerRequest:
+      type: object
+      required: [providerId, externalTransactionId, playerId, walletId, roundId, gameId, kind, money]
+      additionalProperties: false
+      properties:
+        providerId:
+          type: string
+          minLength: 1
+        externalTransactionId:
+          type: string
+          minLength: 1
+          description: Unique per provider; the operation cannot be applied twice.
+        playerId:
+          type: string
+          format: uuid
+        walletId:
+          type: string
+          format: uuid
+        roundId:
+          type: string
+          minLength: 1
+        gameId:
+          type: string
+          minLength: 1
+        kind:
+          type: string
+          enum: [BET, WIN, LOSS, REFUND, ROLLBACK]
+        money:
+          $ref: '#/components/schemas/MoneyInput'
+        referenceExternalTransactionId:
+          type: string
+          description: Operation being reversed; required by `REFUND` and `ROLLBACK`.
+
+    WagerResult:
+      type: object
+      required: [transactionId, status, idempotentReplay]
+      additionalProperties: false
+      properties:
+        transactionId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [PROCESSED, REJECTED]
+        balance:
+          $ref: '#/components/schemas/Money'
+          description: Balance right after the operation was applied; absent when `REJECTED`.
+        failureCode:
+          type: string
+          description: Why the operation was `REJECTED`; absent otherwise.
+          example: INSUFFICIENT_FUNDS
+        idempotentReplay:
+          type: boolean
+          description: True when the result was already persisted and nothing was applied again.
+
     Error:
       type: object
       required: [error]
@@ -274,7 +475,9 @@ components:
               description: |
                 Stable failure code, part of the contract. Codes returned so far:
                 `INVALID_INPUT`, `INVALID_AMOUNT`, `AMOUNT_OVERFLOW`,
-                `WALLET_ALREADY_EXISTS`, `SERVICE_UNAVAILABLE`, `INTERNAL_ERROR`.
+                `TRANSACTION_KIND_NOT_ALLOWED`, `WALLET_ALREADY_EXISTS`,
+                `WALLET_NOT_FOUND`, `IDEMPOTENCY_CONFLICT`, `SERVICE_UNAVAILABLE`,
+                `INTERNAL_ERROR`.
             message:
               type: string
               description: Human-readable description; not meant to be parsed.

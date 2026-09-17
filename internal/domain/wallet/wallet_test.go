@@ -109,11 +109,13 @@ func TestWalletMovementValidation(t *testing.T) {
 	}
 }
 
-func TestWalletApplyBet(t *testing.T) {
+func TestWalletApply(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name         string
+		kind         wager.Kind
+		amount       string
 		mutate       func(params *wager.NewExternalParams)
 		wantErr      error
 		wantRejected bool
@@ -123,6 +125,8 @@ func TestWalletApplyBet(t *testing.T) {
 	}{
 		{
 			name:        "should accept when the balance covers the bet",
+			kind:        wager.KindBet,
+			amount:      "25.00",
 			mutate:      func(*wager.NewExternalParams) {},
 			wantEntry:   true,
 			wantBalance: domaintest.MustParseMoney(t, "75.00", "BRL"),
@@ -130,21 +134,44 @@ func TestWalletApplyBet(t *testing.T) {
 		},
 		{
 			name:        "should accept when the bet takes the whole balance",
-			mutate:      func(params *wager.NewExternalParams) { params.Money = domaintest.MustParseMoney(t, "100.00", "BRL") },
+			kind:        wager.KindBet,
+			amount:      "100.00",
+			mutate:      func(*wager.NewExternalParams) {},
 			wantEntry:   true,
 			wantBalance: domaintest.MustParseMoney(t, "0.00", "BRL"),
 			wantVersion: 2,
 		},
 		{
 			name:         "should return INSUFFICIENT_FUNDS when the bet exceeds the balance",
-			mutate:       func(params *wager.NewExternalParams) { params.Money = domaintest.MustParseMoney(t, "100.01", "BRL") },
+			kind:         wager.KindBet,
+			amount:       "100.01",
+			mutate:       func(*wager.NewExternalParams) {},
 			wantErr:      domain.FailureCodeInsufficientFunds,
 			wantRejected: true,
 			wantBalance:  domaintest.MustParseMoney(t, "100.00", "BRL"),
 			wantVersion:  1,
 		},
 		{
+			name:        "should accept when a win credits the wallet",
+			kind:        wager.KindWin,
+			amount:      "40.00",
+			mutate:      func(*wager.NewExternalParams) {},
+			wantEntry:   true,
+			wantBalance: domaintest.MustParseMoney(t, "140.00", "BRL"),
+			wantVersion: 2,
+		},
+		{
+			name:        "should accept when a loss moves nothing",
+			kind:        wager.KindLoss,
+			amount:      "0.00",
+			mutate:      func(*wager.NewExternalParams) {},
+			wantBalance: domaintest.MustParseMoney(t, "100.00", "BRL"),
+			wantVersion: 1,
+		},
+		{
 			name:         "should return WALLET_PLAYER_MISMATCH when the player does not own the wallet",
+			kind:         wager.KindWin,
+			amount:       "40.00",
 			mutate:       func(params *wager.NewExternalParams) { params.PlayerID = domain.NewID() },
 			wantErr:      domain.FailureCodeWalletPlayerMismatch,
 			wantRejected: true,
@@ -152,23 +179,29 @@ func TestWalletApplyBet(t *testing.T) {
 			wantVersion:  1,
 		},
 		{
-			name:         "should return CURRENCY_MISMATCH when the bet is in another currency",
-			mutate:       func(params *wager.NewExternalParams) { params.Money = domaintest.MustParseMoney(t, "25.00", "USD") },
+			name:         "should return CURRENCY_MISMATCH when a loss is in another currency",
+			kind:         wager.KindLoss,
+			amount:       "0.00",
+			mutate:       func(params *wager.NewExternalParams) { params.Money = domaintest.MustParseMoney(t, "0.00", "USD") },
 			wantErr:      domain.FailureCodeCurrencyMismatch,
 			wantRejected: true,
 			wantBalance:  domaintest.MustParseMoney(t, "100.00", "BRL"),
 			wantVersion:  1,
 		},
 		{
-			name:        "should return INVALID_INPUT when the transaction belongs to another wallet",
+			name:        "should return INVALID_INPUT when the operation belongs to another wallet",
+			kind:        wager.KindBet,
+			amount:      "25.00",
 			mutate:      func(params *wager.NewExternalParams) { params.WalletID = domain.NewID() },
 			wantErr:     domain.FailureCodeInvalidInput,
 			wantBalance: domaintest.MustParseMoney(t, "100.00", "BRL"),
 			wantVersion: 1,
 		},
 		{
-			name:        "should return INVALID_INPUT when the transaction is not a bet",
-			mutate:      func(params *wager.NewExternalParams) { params.Kind = wager.KindWin },
+			name:        "should return INVALID_INPUT when the operation is a reversal",
+			kind:        wager.KindRefund,
+			amount:      "25.00",
+			mutate:      func(*wager.NewExternalParams) {},
 			wantErr:     domain.FailureCodeInvalidInput,
 			wantBalance: domaintest.MustParseMoney(t, "100.00", "BRL"),
 			wantVersion: 1,
@@ -179,21 +212,21 @@ func TestWalletApplyBet(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			wallet := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
-			params := domaintest.ValidExternalParams(t, wager.KindBet, "25.00")
-			params.WalletID = wallet.ID()
-			params.PlayerID = wallet.PlayerID()
+			w := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
+			params := domaintest.ValidExternalParams(t, test.kind, test.amount)
+			params.WalletID = w.ID()
+			params.PlayerID = w.PlayerID()
 			test.mutate(&params)
-			transaction, err := wager.NewExternal(params)
+			operation, err := wager.NewExternal(params)
 			require.NoError(t, err)
 
-			got, err := wallet.ApplyBet(transaction)
+			got, err := w.Apply(operation)
 
 			assert.ErrorIs(t, err, test.wantErr)
 			assert.Equal(t, test.wantRejected, errors.Is(err, domain.ErrRejected))
 			assert.Equal(t, test.wantEntry, got != nil)
-			assert.Equal(t, test.wantBalance, wallet.Balance())
-			assert.Equal(t, test.wantVersion, wallet.Version())
+			assert.Equal(t, test.wantBalance, w.Balance())
+			assert.Equal(t, test.wantVersion, w.Version())
 		})
 	}
 }

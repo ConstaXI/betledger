@@ -59,9 +59,14 @@ func (u UseCases) MustOpenWallet(t *testing.T, balance money.Money) *wallet.Wall
 	return opened
 }
 
-// BetInput builds a BET on the wallet. The external identifier is scoped to the
-// wallet, so tests sharing a database never collide.
+// BetInput builds a BET on the wallet.
 func BetInput(w *wallet.Wallet, externalID string, amountMinor int64) usecase.ProcessWagerInput {
+	return WagerInput(w, wager.KindBet, externalID, amountMinor)
+}
+
+// WagerInput builds an operation of the kind on the wallet. The external
+// identifier is scoped to the wallet, so tests sharing a database never collide.
+func WagerInput(w *wallet.Wallet, kind wager.Kind, externalID string, amountMinor int64) usecase.ProcessWagerInput {
 	scoped := w.ID().String() + ":" + externalID
 	return usecase.ProcessWagerInput{
 		ProviderID:            "provider-a",
@@ -71,7 +76,7 @@ func BetInput(w *wallet.Wallet, externalID string, amountMinor int64) usecase.Pr
 		WalletID:              w.ID(),
 		RoundID:               "round-1",
 		GameID:                "fortune-chimp",
-		Kind:                  wager.KindBet,
+		Kind:                  kind,
 		Money:                 money.MustNew(amountMinor, w.Currency()),
 		CorrelationID:         "req-" + externalID,
 	}
@@ -102,6 +107,26 @@ func (p *Postgres) AssertLedgerReconciles(t *testing.T, walletID domain.ID) {
 		WHERE w.id = $1
 		GROUP BY w.balance_minor`, walletID).Scan(&stored, &rebuilt))
 	assert.Equal(t, stored, rebuilt, "stored balance must equal credits minus debits in the ledger")
+}
+
+// EventCounts counts the outbox events of the wallet by type.
+func (p *Postgres) EventCounts(t *testing.T, walletID domain.ID) map[string]int {
+	t.Helper()
+
+	rows, err := p.Pool.Query(context.Background(),
+		"SELECT event_type, count(*) FROM outbox_events WHERE aggregate_id = $1 GROUP BY event_type", walletID)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	counts := map[string]int{}
+	for rows.Next() {
+		var eventType string
+		var count int
+		require.NoError(t, rows.Scan(&eventType, &count))
+		counts[eventType] = count
+	}
+	require.NoError(t, rows.Err())
+	return counts
 }
 
 // Connections counts the open connections tagged with the application name.

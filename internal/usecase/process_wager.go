@@ -43,41 +43,46 @@ type WagerResult struct {
 // Business refusals, such as insufficient funds, are persisted as REJECTED and
 // returned as a result, not as an error, so that a replay returns them too.
 type ProcessWager struct {
-	transactor   Transactor
-	wallets      WalletRepository
-	transactions TransactionRepository
-	ledger       LedgerRepository
-	outbox       OutboxRepository
-	clock        Clock
+	transactor             Transactor
+	walletsRepository      WalletRepository
+	transactionsRepository TransactionRepository
+	ledgerRepository       LedgerRepository
+	outboxRepository       OutboxRepository
+	clock                  Clock
 }
 
 // NewProcessWager builds the use case.
 func NewProcessWager(
 	transactor Transactor,
 	wallets WalletRepository,
-	transactions TransactionRepository,
+	transactionsRepository TransactionRepository,
 	ledger LedgerRepository,
 	outbox OutboxRepository,
 	clock Clock,
 ) *ProcessWager {
 	return &ProcessWager{
-		transactor:   transactor,
-		wallets:      wallets,
-		transactions: transactions,
-		ledger:       ledger,
-		outbox:       outbox,
-		clock:        clock,
+		transactor:             transactor,
+		walletsRepository:      wallets,
+		transactionsRepository: transactionsRepository,
+		ledgerRepository:       ledger,
+		outboxRepository:       outbox,
+		clock:                  clock,
 	}
 }
 
-// Execute processes the operation. Only BET is supported so far.
+// Execute processes the operation. BET, WIN and LOSS are supported so far; a
+// WIN tied to a previous operation waits for reference resolution.
 func (uc *ProcessWager) Execute(ctx context.Context, input ProcessWagerInput) (WagerResult, error) {
 	if input.CorrelationID == "" {
 		return WagerResult{}, domain.ValidationError(domain.FailureCodeInvalidInput, "correlationId is required")
 	}
-	if input.Kind != wager.KindBet {
+	if input.Kind != wager.KindBet && input.Kind != wager.KindWin && input.Kind != wager.KindLoss {
 		return WagerResult{}, domain.ValidationError(domain.FailureCodeKindNotAllowed,
 			"kind %s is not supported yet", input.Kind)
+	}
+	if input.Kind == wager.KindWin && input.ReferenceExternalTransactionID != "" {
+		return WagerResult{}, domain.ValidationError(domain.FailureCodeKindNotAllowed,
+			"a WIN referencing another operation is not supported yet")
 	}
 
 	payloadHash, err := PayloadHash(input)
@@ -104,12 +109,12 @@ func (uc *ProcessWager) Execute(ctx context.Context, input ProcessWagerInput) (W
 
 	var result WagerResult
 	err = uc.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
-		w, err := uc.wallets.GetForUpdate(ctx, transaction.WalletID())
+		w, err := uc.walletsRepository.GetForUpdate(ctx, transaction.WalletID())
 		if err != nil {
 			return err
 		}
 
-		previous, found, err := uc.transactions.FindByIdempotencyKey(ctx, input.ProviderID, input.IdempotencyKey)
+		previous, found, err := uc.transactionsRepository.FindByIdempotencyKey(ctx, input.ProviderID, input.IdempotencyKey)
 		if err != nil {
 			return err
 		}
@@ -122,7 +127,7 @@ func (uc *ProcessWager) Execute(ctx context.Context, input ProcessWagerInput) (W
 			return nil
 		}
 
-		_, found, err = uc.transactions.FindByExternalID(ctx, input.ProviderID, input.ExternalTransactionID)
+		_, found, err = uc.transactionsRepository.FindByExternalID(ctx, input.ProviderID, input.ExternalTransactionID)
 		if err != nil {
 			return err
 		}
@@ -134,48 +139,53 @@ func (uc *ProcessWager) Execute(ctx context.Context, input ProcessWagerInput) (W
 		loadedVersion := w.Version()
 		occurredAt := uc.clock()
 
-		entry, err := w.ApplyBet(transaction)
-		if errors.Is(err, domain.ErrRejected) {
+		entry, err := w.Apply(transaction)
+		rejected := errors.Is(err, domain.ErrRejected)
+		if err != nil && !rejected {
+			return err
+		}
+
+		var events []event.Event
+		if rejected {
 			failureCode, _ := domain.CodeOf(err)
 			if err := transaction.MarkRejected(failureCode); err != nil {
 				return err
 			}
-			rejected, err := event.NewWagerTransactionRejected(transaction, input.CorrelationID, occurredAt)
+			rejection, err := event.NewWagerTransactionRejected(transaction, input.CorrelationID, occurredAt)
 			if err != nil {
 				return err
 			}
-			if err := uc.transactions.Create(ctx, transaction); err != nil {
+			events = append(events, rejection)
+		} else {
+			if err := transaction.MarkProcessed(w.Balance()); err != nil {
 				return err
 			}
-			result = newWagerResult(transaction, false)
-			return uc.outbox.Append(ctx, rejected)
-		}
-		if err != nil {
-			return err
+			processed, err := event.NewWagerTransactionProcessed(transaction, input.CorrelationID, occurredAt)
+			if err != nil {
+				return err
+			}
+			events = append(events, processed)
 		}
 
-		if err := transaction.MarkProcessed(w.Balance()); err != nil {
+		if err := uc.transactionsRepository.Create(ctx, transaction); err != nil {
 			return err
 		}
-		processed, err := event.NewWagerTransactionProcessed(transaction, input.CorrelationID, occurredAt)
-		if err != nil {
-			return err
+		if entry != nil {
+			balanceChanged, err := event.NewWalletBalanceChanged(w, entry, input.CorrelationID, occurredAt)
+			if err != nil {
+				return err
+			}
+			if err := uc.walletsRepository.UpdateBalance(ctx, w, loadedVersion); err != nil {
+				return err
+			}
+			if err := uc.ledgerRepository.Append(ctx, entry); err != nil {
+				return err
+			}
+			events = append(events, balanceChanged)
 		}
-		balanceChanged, err := event.NewWalletBalanceChanged(w, entry, input.CorrelationID, occurredAt)
-		if err != nil {
-			return err
-		}
-		if err := uc.wallets.UpdateBalance(ctx, w, loadedVersion); err != nil {
-			return err
-		}
-		if err := uc.transactions.Create(ctx, transaction); err != nil {
-			return err
-		}
-		if err := uc.ledger.Append(ctx, entry); err != nil {
-			return err
-		}
+
 		result = newWagerResult(transaction, false)
-		return uc.outbox.Append(ctx, processed, balanceChanged)
+		return uc.outboxRepository.Append(ctx, events...)
 	})
 	if err != nil {
 		return WagerResult{}, err
