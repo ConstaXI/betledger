@@ -43,10 +43,11 @@ func StartApplication(
 	t.Helper()
 
 	cfg := config.Config{
-		HTTPPort:      freePort(t),
-		DatabaseURL:   databaseURL,
-		OIDCIssuerURL: identityProvider.IssuerURL,
-		OIDCAudience:  Audience,
+		HTTPPort:         freePort(t),
+		DatabaseURL:      databaseURL,
+		OIDCIssuerURL:    identityProvider.IssuerURL,
+		OIDCDiscoveryURL: identityProvider.IssuerURL,
+		OIDCAudience:     Audience,
 	}
 	for _, option := range options {
 		option(&cfg)

@@ -151,6 +151,13 @@ checks e a documentação, declarados explicitamente como públicos; qualquer ou
 caminho, inclusive inexistente, passa pela autenticação. Uma rota nova esquecida
 fica fechada, não aberta.
 
+No Compose, a aplicação alcança o Keycloak por `keycloak:8080`, enquanto os
+clientes no host usam `localhost:8081`. Para que o emissor dos tokens seja um só,
+o Keycloak fixa o hostname público (`KC_HOSTNAME`) e deixa as URLs internas, como a
+do JWKS, seguirem o endereço usado. A aplicação busca a descoberta pelo endereço
+interno (`OIDC_DISCOVERY_URL`), mas continua exigindo que o emissor anunciado seja
+o configurado em `OIDC_ISSUER_URL`; a checagem não é relaxada.
+
 O Keycloak é descoberto na subida, e a aplicação não sobe se ele estiver
 inacessível. Depois disso, a indisponibilidade dele não afeta as requisições
 enquanto as chaves em cache forem válidas. Ele não entra no readiness por isso.
@@ -215,5 +222,5 @@ resposta é `503`, que o cliente pode repetir com segurança graças à idempot�
 - **Reversões** contra o estado persistido, incluindo a política que impede
   `REFUND` e `ROLLBACK` sobre o mesmo débito.
 - **Publicação da outbox** e **inbox**, com SQS em filas FIFO e DLQ.
-- **Aplicação em container** no Docker Compose.
+- **Testes com várias instâncias** da aplicação disputando as mesmas carteiras.
 - **Reconciliação** e **observabilidade** além dos logs JSON.

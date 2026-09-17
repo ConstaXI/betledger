@@ -14,6 +14,10 @@ type Config struct {
 	// OIDCIssuerURL is the issuer every accepted token must carry; its
 	// discovery document provides the signing keys.
 	OIDCIssuerURL string
+	// OIDCDiscoveryURL is where the discovery document is fetched when the
+	// provider is reached through an address other than the issuer, as inside
+	// the Compose network; it defaults to the issuer.
+	OIDCDiscoveryURL string
 	// OIDCAudience must appear in the aud claim of every accepted token.
 	OIDCAudience string
 }
@@ -22,10 +26,11 @@ type Config struct {
 // value is missing or invalid.
 func Load() (Config, error) {
 	cfg := Config{
-		HTTPPort:      envOrDefault("HTTP_PORT", "8080"),
-		DatabaseURL:   os.Getenv("DATABASE_URL"),
-		OIDCIssuerURL: os.Getenv("OIDC_ISSUER_URL"),
-		OIDCAudience:  envOrDefault("OIDC_AUDIENCE", "betledger-api"),
+		HTTPPort:         envOrDefault("HTTP_PORT", "8080"),
+		DatabaseURL:      os.Getenv("DATABASE_URL"),
+		OIDCIssuerURL:    os.Getenv("OIDC_ISSUER_URL"),
+		OIDCDiscoveryURL: envOrDefault("OIDC_DISCOVERY_URL", os.Getenv("OIDC_ISSUER_URL")),
+		OIDCAudience:     envOrDefault("OIDC_AUDIENCE", "betledger-api"),
 	}
 	if err := cfg.validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid config: %w", err)

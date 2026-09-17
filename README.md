@@ -17,23 +17,40 @@ O projeto está em construção incremental. O que existe hoje:
 - **Autenticação e autorização** — Keycloak no Compose; os endpoints de negócio
   exigem um access token `client_credentials` com o papel adequado, e cada
   provedor só age em nome próprio.
+- **Aplicação em container** — `docker compose up --build` sobe tudo, com as
+  migrations aplicadas antes da aplicação.
 - **Health checks** — liveness em `GET /health/live` e readiness, que checa o
   banco, em `GET /health/ready`.
 
-Ainda **não** existem: reversões (`REFUND`, `ROLLBACK`) e `WIN` com referência, as rotas de leitura, SQS, o worker que publica a outbox e a
-aplicação em container. A seção
+Ainda **não** existem: reversões (`REFUND`, `ROLLBACK`) e `WIN` com referência,
+as rotas de leitura, SQS, o worker que publica a outbox e os testes com várias
+instâncias. A seção
 [Próximos passos](#próximos-passos) lista a ordem prevista.
 
 ## Pré-requisitos
 
-- **Go 1.27.1 ou superior**, a versão declarada em [go.mod](go.mod).
-- **Docker com o plugin Compose**, para o PostgreSQL e os testes de integração.
-- **make**.
+- **Docker com o plugin Compose.** Basta ele para executar a aplicação.
+- **Go 1.27.1 ou superior**, a versão declarada em [go.mod](go.mod) e no
+  [Dockerfile](Dockerfile), e **make**, para desenvolver e rodar os testes.
 
 O sqlc não precisa ser instalado: ele é uma tool do módulo e roda com
 `go tool sqlc`.
 
 ## Executar
+
+A partir de um checkout limpo:
+
+```sh
+docker compose up --build
+```
+
+O Compose sobe o PostgreSQL e o Keycloak, espera os dois ficarem saudáveis,
+aplica as migrations num container de execução única (`migrate`) e só então
+inicia a aplicação em http://localhost:8080. A imagem é multi-stage e roda um
+binário estático sobre `distroless`, sem shell e como usuário sem privilégios.
+
+Para desenvolver, a aplicação pode rodar direto no host, contra os mesmos
+containers:
 
 ```sh
 cp .env.example .env
@@ -61,6 +78,7 @@ make run          # inicia a aplicação
 | `DATABASE_URL` | sim | — | Conexão com o PostgreSQL |
 | `HTTP_PORT` | não | `8080` | Porta do servidor HTTP |
 | `OIDC_ISSUER_URL` | sim | — | Emissor dos tokens; a descoberta OIDC fornece as chaves de assinatura |
+| `OIDC_DISCOVERY_URL` | não | `OIDC_ISSUER_URL` | Endereço de onde buscar a descoberta OIDC, quando o Keycloak é alcançado por outro endereço |
 | `OIDC_AUDIENCE` | não | `betledger-api` | Audiência exigida no claim `aud` |
 
 A configuração é validada na inicialização, e o banco é consultado antes de o
@@ -269,6 +287,7 @@ go test -tags=integration -run 'TestSchemaEnforcesFinancialInvariants' ./test/in
 
 ```
 api/                                 contrato HTTP em OpenAPI e página do Swagger UI
+Dockerfile                           imagem multi-stage com a aplicação e o binário de migrations
 cmd/betledger/                       entrypoint
 cmd/migrate/                         aplicação e reversão das migrations
 deploy/keycloak/                     realm importado pelo Keycloak no Compose e nos testes
@@ -297,7 +316,7 @@ implementando as portas dos casos de uso.
 
 Na ordem prevista, seguindo [SPECS.md](SPECS.md):
 
-1. Aplicação em container, para rodar tudo com `docker compose up --build`.
+1. Testes com pelo menos três instâncias independentes (seção 8).
 2. Reversões e `WIN` com referência, com resolução de referências pendentes
    (seções 5 e 8).
 3. SQS com inbox e o worker de publicação da outbox (seções 10 e 11).

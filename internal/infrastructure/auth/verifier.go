@@ -51,15 +51,28 @@ type TokenVerifier struct {
 
 // NewTokenVerifier builds the verifier. The identity provider is discovered on
 // start, so that an unreachable or misconfigured provider prevents the
-// application from starting instead of failing every request.
+// application from starting instead of failing every request. The discovery
+// document may come from an internal address, but the issuer it announces must
+// still be the configured one.
 func NewTokenVerifier(lc fx.Lifecycle, cfg config.Config) *TokenVerifier {
 	client := &http.Client{Timeout: identityProviderTimeout}
 	tokenVerifier := &TokenVerifier{}
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			provider, err := oidc.NewProvider(oidc.ClientContext(ctx, client), cfg.OIDCIssuerURL)
+			discoveryCtx := oidc.InsecureIssuerURLContext(oidc.ClientContext(ctx, client), cfg.OIDCIssuerURL)
+			provider, err := oidc.NewProvider(discoveryCtx, cfg.OIDCDiscoveryURL)
 			if err != nil {
-				return fmt.Errorf("failed to discover the identity provider %s: %w", cfg.OIDCIssuerURL, err)
+				return fmt.Errorf("failed to discover the identity provider at %s: %w", cfg.OIDCDiscoveryURL, err)
+			}
+			var discovered struct {
+				Issuer string `json:"issuer"`
+			}
+			if err := provider.Claims(&discovered); err != nil {
+				return fmt.Errorf("failed to read the discovery document: %w", err)
+			}
+			if discovered.Issuer != cfg.OIDCIssuerURL {
+				return fmt.Errorf("the identity provider announces issuer %s, expected %s",
+					discovered.Issuer, cfg.OIDCIssuerURL)
 			}
 			tokenVerifier.verifier = provider.VerifierContext(
 				oidc.ClientContext(context.Background(), client),
