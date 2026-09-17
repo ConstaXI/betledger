@@ -1,6 +1,6 @@
 //go:build integration
 
-package postgres_test
+package integration
 
 import (
 	"context"
@@ -16,6 +16,7 @@ import (
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
 	"github.com/davibanfi/betledger/internal/usecase"
+	"github.com/davibanfi/betledger/test/testenv"
 )
 
 func TestTwoConcurrentBetsNeverOverdrawTheWallet(t *testing.T) {
@@ -25,7 +26,7 @@ func TestTwoConcurrentBetsNeverOverdrawTheWallet(t *testing.T) {
 	ctx := context.Background()
 
 	for round := range rounds {
-		w := openTestWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
+		w := useCases.MustOpenWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
 
 		results := make([]usecase.WagerResult, 2)
 		errs := make([]error, 2)
@@ -36,8 +37,8 @@ func TestTwoConcurrentBetsNeverOverdrawTheWallet(t *testing.T) {
 			go func() {
 				defer done.Done()
 				start.Wait()
-				input := betInput(w, fmt.Sprintf("race-%d-%d", round, i), 8000)
-				results[i], errs[i] = processWager.Execute(ctx, input)
+				input := testenv.BetInput(w, fmt.Sprintf("race-%d-%d", round, i), 8000)
+				results[i], errs[i] = useCases.ProcessWager.Execute(ctx, input)
 			}()
 		}
 		start.Done()
@@ -54,11 +55,11 @@ func TestTwoConcurrentBetsNeverOverdrawTheWallet(t *testing.T) {
 		assert.Equal(t, map[wager.State]int{wager.StateProcessed: 1, wager.StateRejected: 1}, states)
 		assert.Equal(t, 1, failures[domain.FailureCodeInsufficientFunds])
 
-		balance, version, debits := walletState(t, w.ID())
+		balance, version, debits := database.WalletState(t, w.ID())
 		assert.Equal(t, int64(2000), balance)
 		assert.Equal(t, int64(2), version)
 		assert.Equal(t, 1, debits)
-		assertLedgerReconciles(t, w.ID())
+		database.AssertLedgerReconciles(t, w.ID())
 	}
 }
 
@@ -72,8 +73,8 @@ func TestTheSameBetSentFiftyTimesDebitsOnce(t *testing.T) {
 	ctx := context.Background()
 
 	for range rounds {
-		w := openTestWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
-		input := betInput(w, "duplicated", 2500)
+		w := useCases.MustOpenWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
+		input := testenv.BetInput(w, "duplicated", 2500)
 
 		results := make([]usecase.WagerResult, attempts)
 		errs := make([]error, attempts)
@@ -84,7 +85,7 @@ func TestTheSameBetSentFiftyTimesDebitsOnce(t *testing.T) {
 			go func() {
 				defer done.Done()
 				start.Wait()
-				results[i], errs[i] = processWager.Execute(ctx, input)
+				results[i], errs[i] = useCases.ProcessWager.Execute(ctx, input)
 			}()
 		}
 		start.Done()
@@ -101,11 +102,11 @@ func TestTheSameBetSentFiftyTimesDebitsOnce(t *testing.T) {
 		assert.Equal(t, map[bool]int{false: 1, true: attempts - 1}, replays)
 		assert.Len(t, transactionIDs, 1)
 
-		balance, version, debits := walletState(t, w.ID())
+		balance, version, debits := database.WalletState(t, w.ID())
 		assert.Equal(t, int64(7500), balance)
 		assert.Equal(t, int64(2), version)
 		assert.Equal(t, 1, debits)
-		assertLedgerReconciles(t, w.ID())
+		database.AssertLedgerReconciles(t, w.ID())
 	}
 }
 
@@ -117,7 +118,7 @@ func TestIndependentWalletsAreProcessedConcurrently(t *testing.T) {
 
 	opened := make([]*wallet.Wallet, wallets)
 	for i := range wallets {
-		opened[i] = openTestWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
+		opened[i] = useCases.MustOpenWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
 	}
 
 	errs := make([]error, wallets)
@@ -126,17 +127,17 @@ func TestIndependentWalletsAreProcessedConcurrently(t *testing.T) {
 		done.Add(1)
 		go func() {
 			defer done.Done()
-			_, errs[i] = processWager.Execute(ctx, betInput(opened[i], "independent", 3000))
+			_, errs[i] = useCases.ProcessWager.Execute(ctx, testenv.BetInput(opened[i], "independent", 3000))
 		}()
 	}
 	done.Wait()
 
 	for i := range wallets {
 		require.NoError(t, errs[i])
-		balance, _, debits := walletState(t, opened[i].ID())
+		balance, _, debits := database.WalletState(t, opened[i].ID())
 		assert.Equal(t, int64(7000), balance)
 		assert.Equal(t, 1, debits)
-		assertLedgerReconciles(t, opened[i].ID())
+		database.AssertLedgerReconciles(t, opened[i].ID())
 	}
 }
 
@@ -145,18 +146,18 @@ func TestProcessWagerPersistsRejectionsAndReplaysTheOriginalBalance(t *testing.T
 
 	ctx := context.Background()
 	brl := money.MustCurrency("BRL")
-	w := openTestWallet(t, money.MustNew(10000, brl))
+	w := useCases.MustOpenWallet(t, money.MustNew(10000, brl))
 
-	first, err := processWager.Execute(ctx, betInput(w, "first", 2500))
+	first, err := useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "first", 2500))
 	require.NoError(t, err)
-	_, err = processWager.Execute(ctx, betInput(w, "second", 2500))
+	_, err = useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "second", 2500))
 	require.NoError(t, err)
-	rejected, err := processWager.Execute(ctx, betInput(w, "too-large", 9000))
+	rejected, err := useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "too-large", 9000))
 	require.NoError(t, err)
 
-	replayedFirst, err := processWager.Execute(ctx, betInput(w, "first", 2500))
+	replayedFirst, err := useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "first", 2500))
 	require.NoError(t, err)
-	replayedRejection, err := processWager.Execute(ctx, betInput(w, "too-large", 9000))
+	replayedRejection, err := useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "too-large", 9000))
 	require.NoError(t, err)
 
 	assert.Equal(t, first.TransactionID, replayedFirst.TransactionID)
@@ -168,14 +169,14 @@ func TestProcessWagerPersistsRejectionsAndReplaysTheOriginalBalance(t *testing.T
 	assert.Equal(t, domain.FailureCodeInsufficientFunds, replayedRejection.FailureCode)
 	assert.True(t, replayedRejection.IdempotentReplay)
 
-	balance, version, debits := walletState(t, w.ID())
+	balance, version, debits := database.WalletState(t, w.ID())
 	assert.Equal(t, int64(5000), balance)
 	assert.Equal(t, int64(3), version)
 	assert.Equal(t, 2, debits)
-	assertLedgerReconciles(t, w.ID())
+	database.AssertLedgerReconciles(t, w.ID())
 
 	var rejectedEvents int
-	require.NoError(t, pool.QueryRow(ctx,
+	require.NoError(t, database.Pool.QueryRow(ctx,
 		"SELECT count(*) FROM outbox_events WHERE aggregate_id = $1 AND event_type = 'WagerTransactionRejected'",
 		w.ID()).Scan(&rejectedEvents))
 	assert.Equal(t, 1, rejectedEvents)
@@ -185,72 +186,20 @@ func TestProcessWagerReportsIdempotencyConflicts(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	w := openTestWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
-	_, err := processWager.Execute(ctx, betInput(w, "conflict", 2500))
+	w := useCases.MustOpenWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
+	_, err := useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "conflict", 2500))
 	require.NoError(t, err)
 
-	changedPayload := betInput(w, "conflict", 3000)
-	otherKey := betInput(w, "conflict", 2500)
+	changedPayload := testenv.BetInput(w, "conflict", 3000)
+	otherKey := testenv.BetInput(w, "conflict", 2500)
 	otherKey.IdempotencyKey = "provider-a:conflict:another-key"
 
-	_, errChangedPayload := processWager.Execute(ctx, changedPayload)
-	_, errOtherKey := processWager.Execute(ctx, otherKey)
+	_, errChangedPayload := useCases.ProcessWager.Execute(ctx, changedPayload)
+	_, errOtherKey := useCases.ProcessWager.Execute(ctx, otherKey)
 
 	assert.ErrorIs(t, errChangedPayload, domain.FailureCodeIdempotencyConflict)
 	assert.ErrorIs(t, errOtherKey, domain.FailureCodeIdempotencyConflict)
-	balance, _, debits := walletState(t, w.ID())
+	balance, _, debits := database.WalletState(t, w.ID())
 	assert.Equal(t, int64(7500), balance)
 	assert.Equal(t, 1, debits)
-}
-
-func openTestWallet(t *testing.T, balance money.Money) *wallet.Wallet {
-	t.Helper()
-
-	w, err := openWallet.Execute(context.Background(), usecase.OpenWalletInput{
-		PlayerID:       domain.NewID(),
-		InitialBalance: balance,
-		CorrelationID:  "req-seed",
-	})
-	require.NoError(t, err)
-	return w
-}
-
-func betInput(w *wallet.Wallet, externalID string, amountMinor int64) usecase.ProcessWagerInput {
-	scoped := w.ID().String() + ":" + externalID
-	return usecase.ProcessWagerInput{
-		ProviderID:            "provider-a",
-		ExternalTransactionID: scoped,
-		IdempotencyKey:        "provider-a:" + scoped,
-		PlayerID:              w.PlayerID(),
-		WalletID:              w.ID(),
-		RoundID:               "round-1",
-		GameID:                "fortune-chimp",
-		Kind:                  wager.KindBet,
-		Money:                 money.MustNew(amountMinor, w.Currency()),
-		CorrelationID:         "req-" + externalID,
-	}
-}
-
-func walletState(t *testing.T, walletID domain.ID) (balance, version int64, debits int) {
-	t.Helper()
-
-	require.NoError(t, pool.QueryRow(context.Background(), `
-		SELECT w.balance_minor, w.version,
-			(SELECT count(*) FROM wallet_ledger_entries l WHERE l.wallet_id = w.id AND l.direction = 'DEBIT')
-		FROM wallets w WHERE w.id = $1`, walletID).Scan(&balance, &version, &debits))
-	return balance, version, debits
-}
-
-func assertLedgerReconciles(t *testing.T, walletID domain.ID) {
-	t.Helper()
-
-	var stored, rebuilt int64
-	require.NoError(t, pool.QueryRow(context.Background(), `
-		SELECT w.balance_minor,
-			COALESCE(SUM(CASE l.direction WHEN 'CREDIT' THEN l.amount_minor ELSE -l.amount_minor END), 0)
-		FROM wallets w
-		LEFT JOIN wallet_ledger_entries l ON l.wallet_id = w.id
-		WHERE w.id = $1
-		GROUP BY w.balance_minor`, walletID).Scan(&stored, &rebuilt))
-	assert.Equal(t, stored, rebuilt, "stored balance must equal credits minus debits in the ledger")
 }
