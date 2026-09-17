@@ -79,6 +79,7 @@ func (b *Binary) StartProcess(t *testing.T, databaseURL string, identityProvider
 		"OIDC_ISSUER_URL="+identityProvider.IssuerURL,
 		"OIDC_DISCOVERY_URL="+identityProvider.IssuerURL,
 		"OIDC_AUDIENCE="+Audience,
+		"REFERENCE_POLL_INTERVAL=1h",
 	)
 	command.Stdout = output
 	command.Stderr = output

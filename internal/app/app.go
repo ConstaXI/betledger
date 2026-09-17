@@ -12,8 +12,10 @@ import (
 	"go.uber.org/fx/fxevent"
 
 	"github.com/davibanfi/betledger/internal/infrastructure/auth"
+	"github.com/davibanfi/betledger/internal/infrastructure/config"
 	"github.com/davibanfi/betledger/internal/infrastructure/httpserver"
 	"github.com/davibanfi/betledger/internal/infrastructure/postgres"
+	"github.com/davibanfi/betledger/internal/infrastructure/worker"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
@@ -29,11 +31,14 @@ func Options() fx.Option {
 			newClock,
 			usecase.NewOpenWallet,
 			usecase.NewProcessWager,
+			newReferenceRetryPolicy,
+			usecase.NewResolvePendingReferences,
 			fx.Annotate(newPostgresHealthCheck, fx.ResultTags(`group:"readiness"`)),
 			fx.Annotate(auth.NewTokenVerifier, fx.As(new(httpserver.TokenVerifier))),
 		),
 		postgres.Module,
 		httpserver.Module,
+		worker.Module,
 	)
 }
 
@@ -43,6 +48,20 @@ func newLogger() *slog.Logger {
 
 func newClock() usecase.Clock {
 	return time.Now
+}
+
+// pendingReferenceBatchSize bounds how many waiting operations a worker takes
+// in one go, so that a single run never holds many leases at once.
+const pendingReferenceBatchSize = 50
+
+func newReferenceRetryPolicy(cfg config.Config) usecase.ReferenceRetryPolicy {
+	return usecase.ReferenceRetryPolicy{
+		MaxAttempts: cfg.ReferenceMaxAttempts,
+		BaseDelay:   cfg.ReferenceRetryBaseDelay,
+		MaxDelay:    cfg.ReferenceRetryMaxDelay,
+		Lease:       cfg.ReferenceRetryLease,
+		BatchSize:   pendingReferenceBatchSize,
+	}
 }
 
 func newPostgresHealthCheck(pool *pgxpool.Pool) httpserver.HealthCheck {

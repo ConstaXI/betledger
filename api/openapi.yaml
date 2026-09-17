@@ -186,7 +186,10 @@ paths:
         '202':
           description: |
             The operation was recorded as `PENDING_REFERENCE` and waits for its
-            reference. Replays answer the same way while it waits.
+            reference. It is retried in the background with exponential backoff
+            and ends `PROCESSED` or `REJECTED` once the reference concludes, or
+            `REJECTED` with `REFERENCE_NOT_FOUND` when the attempts run out.
+            Replays answer the same way while it waits.
           headers:
             X-Correlation-Id:
               $ref: '#/components/headers/CorrelationId'
@@ -562,7 +565,7 @@ components:
             Why the operation was `REJECTED`; absent otherwise. One of
             `INSUFFICIENT_FUNDS`, `INSUFFICIENT_FUNDS_FOR_REVERSAL`,
             `WALLET_PLAYER_MISMATCH`, `CURRENCY_MISMATCH`, `REFERENCE_MISMATCH`,
-            `REFERENCE_NOT_PROCESSED`, `REFERENCE_AMOUNT_MISMATCH` or
+            `REFERENCE_NOT_FOUND`, `REFERENCE_NOT_PROCESSED`, `REFERENCE_AMOUNT_MISMATCH` or
             `REFERENCE_ALREADY_REVERSED`.
           example: INSUFFICIENT_FUNDS
         idempotentReplay:

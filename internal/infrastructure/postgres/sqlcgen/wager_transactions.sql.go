@@ -7,6 +7,7 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -46,7 +47,8 @@ INSERT INTO wager_transactions (
     reference_external_transaction_id,
     reference_transaction_id,
     failure_code,
-    result_balance_minor
+    result_balance_minor,
+    next_attempt_at
 ) VALUES (
     $1,
     $2,
@@ -64,7 +66,8 @@ INSERT INTO wager_transactions (
     $14,
     $15,
     $16,
-    $17
+    $17,
+    CASE WHEN $3::text = 'PENDING_REFERENCE' THEN now() END
 )
 `
 
@@ -111,8 +114,55 @@ func (q *Queries) InsertWagerTransaction(ctx context.Context, arg InsertWagerTra
 	return err
 }
 
+const leasePendingReferences = `-- name: LeasePendingReferences :many
+UPDATE wager_transactions
+SET next_attempt_at = $1::timestamptz,
+    updated_at = now()
+WHERE id IN (
+    SELECT due.id
+    FROM wager_transactions AS due
+    WHERE due.state = 'PENDING_REFERENCE'
+      AND due.next_attempt_at <= $2::timestamptz
+    ORDER BY due.next_attempt_at
+    LIMIT $3::int
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id, wallet_id
+`
+
+type LeasePendingReferencesParams struct {
+	LeaseUntil time.Time
+	DueAt      time.Time
+	BatchSize  int32
+}
+
+type LeasePendingReferencesRow struct {
+	ID       uuid.UUID
+	WalletID uuid.UUID
+}
+
+func (q *Queries) LeasePendingReferences(ctx context.Context, arg LeasePendingReferencesParams) ([]LeasePendingReferencesRow, error) {
+	rows, err := q.db.Query(ctx, leasePendingReferences, arg.LeaseUntil, arg.DueAt, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LeasePendingReferencesRow
+	for rows.Next() {
+		var i LeasePendingReferencesRow
+		if err := rows.Scan(&i.ID, &i.WalletID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const selectWagerTransactionByExternalID = `-- name: SelectWagerTransactionByExternalID :one
-SELECT id, kind, state, wallet_id, player_id, currency, amount_minor, provider_id, external_transaction_id, idempotency_key, payload_hash, round_id, game_id, reference_external_transaction_id, reference_transaction_id, failure_code, result_balance_minor, created_at, updated_at
+SELECT id, kind, state, wallet_id, player_id, currency, amount_minor, provider_id, external_transaction_id, idempotency_key, payload_hash, round_id, game_id, reference_external_transaction_id, reference_transaction_id, failure_code, result_balance_minor, created_at, updated_at, reference_attempts, next_attempt_at
 FROM wager_transactions
 WHERE provider_id = $1
   AND external_transaction_id = $2
@@ -146,12 +196,49 @@ func (q *Queries) SelectWagerTransactionByExternalID(ctx context.Context, arg Se
 		&i.ResultBalanceMinor,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ReferenceAttempts,
+		&i.NextAttemptAt,
+	)
+	return i, err
+}
+
+const selectWagerTransactionByID = `-- name: SelectWagerTransactionByID :one
+SELECT id, kind, state, wallet_id, player_id, currency, amount_minor, provider_id, external_transaction_id, idempotency_key, payload_hash, round_id, game_id, reference_external_transaction_id, reference_transaction_id, failure_code, result_balance_minor, created_at, updated_at, reference_attempts, next_attempt_at
+FROM wager_transactions
+WHERE id = $1
+`
+
+func (q *Queries) SelectWagerTransactionByID(ctx context.Context, id uuid.UUID) (WagerTransaction, error) {
+	row := q.db.QueryRow(ctx, selectWagerTransactionByID, id)
+	var i WagerTransaction
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.State,
+		&i.WalletID,
+		&i.PlayerID,
+		&i.Currency,
+		&i.AmountMinor,
+		&i.ProviderID,
+		&i.ExternalTransactionID,
+		&i.IdempotencyKey,
+		&i.PayloadHash,
+		&i.RoundID,
+		&i.GameID,
+		&i.ReferenceExternalTransactionID,
+		&i.ReferenceTransactionID,
+		&i.FailureCode,
+		&i.ResultBalanceMinor,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ReferenceAttempts,
+		&i.NextAttemptAt,
 	)
 	return i, err
 }
 
 const selectWagerTransactionByIdempotencyKey = `-- name: SelectWagerTransactionByIdempotencyKey :one
-SELECT id, kind, state, wallet_id, player_id, currency, amount_minor, provider_id, external_transaction_id, idempotency_key, payload_hash, round_id, game_id, reference_external_transaction_id, reference_transaction_id, failure_code, result_balance_minor, created_at, updated_at
+SELECT id, kind, state, wallet_id, player_id, currency, amount_minor, provider_id, external_transaction_id, idempotency_key, payload_hash, round_id, game_id, reference_external_transaction_id, reference_transaction_id, failure_code, result_balance_minor, created_at, updated_at, reference_attempts, next_attempt_at
 FROM wager_transactions
 WHERE provider_id = $1
   AND idempotency_key = $2
@@ -185,6 +272,47 @@ func (q *Queries) SelectWagerTransactionByIdempotencyKey(ctx context.Context, ar
 		&i.ResultBalanceMinor,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ReferenceAttempts,
+		&i.NextAttemptAt,
 	)
 	return i, err
+}
+
+const updatePendingReference = `-- name: UpdatePendingReference :execrows
+UPDATE wager_transactions
+SET state = $1,
+    failure_code = $2,
+    reference_transaction_id = $3,
+    result_balance_minor = $4,
+    reference_attempts = $5,
+    next_attempt_at = $6,
+    updated_at = now()
+WHERE id = $7
+  AND state = 'PENDING_REFERENCE'
+`
+
+type UpdatePendingReferenceParams struct {
+	State                  string
+	FailureCode            *string
+	ReferenceTransactionID *uuid.UUID
+	ResultBalanceMinor     *int64
+	ReferenceAttempts      int32
+	NextAttemptAt          *time.Time
+	ID                     uuid.UUID
+}
+
+func (q *Queries) UpdatePendingReference(ctx context.Context, arg UpdatePendingReferenceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updatePendingReference,
+		arg.State,
+		arg.FailureCode,
+		arg.ReferenceTransactionID,
+		arg.ResultBalanceMinor,
+		arg.ReferenceAttempts,
+		arg.NextAttemptAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

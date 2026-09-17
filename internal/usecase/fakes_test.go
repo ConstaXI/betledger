@@ -3,6 +3,7 @@ package usecase_test
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/event"
@@ -19,6 +20,8 @@ type fakeTxKey struct{}
 type fakeStore struct {
 	wallets      map[domain.ID]*wallet.Wallet
 	transactions []*wager.Transaction
+	updated      map[domain.ID]*wager.Transaction
+	nextAttempts map[domain.ID]time.Time
 	entries      []*ledger.Entry
 	events       []event.Event
 	eventTypes   []event.Type
@@ -34,8 +37,16 @@ type fakeTransactor struct {
 	committed fakeStore
 }
 
+func newFakeStore() fakeStore {
+	return fakeStore{
+		wallets:      map[domain.ID]*wallet.Wallet{},
+		updated:      map[domain.ID]*wager.Transaction{},
+		nextAttempts: map[domain.ID]time.Time{},
+	}
+}
+
 func newFakeTransactor(wallets ...*wallet.Wallet) *fakeTransactor {
-	transactor := &fakeTransactor{committed: fakeStore{wallets: map[domain.ID]*wallet.Wallet{}}}
+	transactor := &fakeTransactor{committed: newFakeStore()}
 	for _, w := range wallets {
 		transactor.committed.wallets[w.ID()] = copyWallet(w)
 	}
@@ -44,10 +55,8 @@ func newFakeTransactor(wallets ...*wallet.Wallet) *fakeTransactor {
 
 func (f *fakeTransactor) WithinTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
 	f.calls++
-	if f.committed.wallets == nil {
-		f.committed.wallets = map[domain.ID]*wallet.Wallet{}
-	}
-	tx := &fakeTransaction{committed: &f.committed, staged: &fakeStore{wallets: map[domain.ID]*wallet.Wallet{}}}
+	staged := newFakeStore()
+	tx := &fakeTransaction{committed: &f.committed, staged: &staged}
 	if err := fn(context.WithValue(ctx, fakeTxKey{}, tx)); err != nil {
 		return err
 	}
@@ -55,6 +64,14 @@ func (f *fakeTransactor) WithinTransaction(ctx context.Context, fn func(ctx cont
 		f.committed.wallets[id] = w
 	}
 	f.committed.transactions = append(f.committed.transactions, tx.staged.transactions...)
+	for i, transaction := range f.committed.transactions {
+		if updated, ok := tx.staged.updated[transaction.ID()]; ok {
+			f.committed.transactions[i] = updated
+		}
+	}
+	for id, at := range tx.staged.nextAttempts {
+		f.committed.nextAttempts[id] = at
+	}
 	f.committed.entries = append(f.committed.entries, tx.staged.entries...)
 	f.committed.events = append(f.committed.events, tx.staged.events...)
 	f.committed.eventTypes = append(f.committed.eventTypes, tx.staged.eventTypes...)
@@ -168,6 +185,90 @@ func (fakeTransactions) HasProcessedReversal(ctx context.Context, referenceID do
 		}
 	}
 	return false, nil
+}
+
+func (fakeTransactions) FindByID(ctx context.Context, id domain.ID) (*wager.Transaction, bool, error) {
+	tx, err := transactionFrom(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, transaction := range tx.committed.transactions {
+		if transaction.ID() == id {
+			return copyTransaction(transaction), true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+func (fakeTransactions) LeasePendingReferences(
+	ctx context.Context,
+	dueAt, leaseUntil time.Time,
+	limit int,
+) ([]usecase.PendingReference, error) {
+	tx, err := transactionFrom(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var leased []usecase.PendingReference
+	for _, transaction := range tx.committed.transactions {
+		due := !tx.committed.nextAttempts[transaction.ID()].After(dueAt)
+		if transaction.State() == wager.StatePendingReference && due && len(leased) < limit {
+			tx.staged.nextAttempts[transaction.ID()] = leaseUntil
+			leased = append(leased, usecase.PendingReference{
+				TransactionID: transaction.ID(),
+				WalletID:      transaction.WalletID(),
+			})
+		}
+	}
+	return leased, nil
+}
+
+func (fakeTransactions) UpdatePendingReference(
+	ctx context.Context,
+	transaction *wager.Transaction,
+	nextAttemptAt time.Time,
+) error {
+	tx, err := transactionFrom(ctx)
+	if err != nil {
+		return err
+	}
+	for _, stored := range tx.committed.transactions {
+		if stored.ID() == transaction.ID() && stored.State() == wager.StatePendingReference {
+			tx.staged.updated[transaction.ID()] = copyTransaction(transaction)
+			tx.staged.nextAttempts[transaction.ID()] = nextAttemptAt
+			return nil
+		}
+	}
+	return usecase.ErrConcurrentUpdate
+}
+
+func copyTransaction(transaction *wager.Transaction) *wager.Transaction {
+	params := wager.RehydrateParams{
+		ID:                             transaction.ID(),
+		Kind:                           transaction.Kind(),
+		State:                          transaction.State(),
+		WalletID:                       transaction.WalletID(),
+		PlayerID:                       transaction.PlayerID(),
+		Money:                          transaction.Money(),
+		ProviderID:                     transaction.ProviderID(),
+		ExternalTransactionID:          transaction.ExternalTransactionID(),
+		IdempotencyKey:                 transaction.IdempotencyKey(),
+		PayloadHash:                    transaction.PayloadHash(),
+		RoundID:                        transaction.RoundID(),
+		GameID:                         transaction.GameID(),
+		ReferenceExternalTransactionID: transaction.ReferenceExternalTransactionID(),
+		ReferenceAttempts:              transaction.ReferenceAttempts(),
+		FailureCode:                    transaction.FailureCode(),
+	}
+	params.ReferenceTransactionID, _ = transaction.ReferenceTransactionID()
+	if balance, ok := transaction.ResultBalance(); ok {
+		params.ResultBalance = &balance
+	}
+	copied, err := wager.Rehydrate(params)
+	if err != nil {
+		panic(err)
+	}
+	return copied
 }
 
 type fakeLedger struct{}

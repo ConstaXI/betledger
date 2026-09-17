@@ -162,9 +162,34 @@ ainda espera outra referência, a operação é gravada como `PENDING_REFERENCE`
 o evento `WagerTransactionPendingReference`, sem mover dinheiro, e o HTTP
 responde `202`. Uma referência que terminou sem sucesso (`REJECTED` ou `FAILED`)
 é definitiva: a operação é recusada com `REFERENCE_NOT_PROCESSED`, em vez de
-esperar. A retomada das pendentes ainda não existe; a decisão já tomada é que
-elas expiram por número máximo de tentativas, não por TTL, o que dispensa relógio
-no domínio, terminando como `REJECTED` com `REFERENCE_NOT_FOUND`.
+esperar.
+
+**Retomada das pendentes.** Um worker tenta de novo as operações em
+`PENDING_REFERENCE` usando o mesmo código de conclusão do recebimento (resolução
+da referência, `Wallet.Apply`, eventos e gravação), sob o lock da carteira. O
+estado da espera vive no banco — `reference_attempts` e `next_attempt_at` —, então
+a retomada sobrevive a reinícios sem nada em memória.
+
+- **Expiração por tentativas, não por TTL.** O domínio só conta as tentativas que
+  não encontraram a referência concluída (`RecordMissingReference`) e recusa a
+  operação com `REFERENCE_NOT_FOUND` ao atingir o máximo, emitindo
+  `WagerTransactionRejected`. Nenhuma regra do domínio lê relógio.
+- **Backoff exponencial calculado na aplicação**: a espera começa em
+  `REFERENCE_RETRY_BASE_DELAY` e dobra a cada tentativa, até
+  `REFERENCE_RETRY_MAX_DELAY`. Sem jitter, porque as tentativas não disputam um
+  recurso externo e o lease já espalha o trabalho entre workers.
+- **Várias instâncias com lease.** Cada worker toma um lote com
+  `FOR UPDATE SKIP LOCKED` e adia `next_attempt_at` pelo tempo do lease, num único
+  comando; outro worker pula esses registros. Se o worker morrer, o lease expira e
+  a operação volta a ser tomada. O lease só divide o trabalho: a correção vem do
+  lock da carteira e de a gravação exigir que a operação ainda esteja pendente, e
+  um teste com vários workers simultâneos comprova um único crédito por operação.
+- **Encerramento.** No `SIGTERM` o worker para de tomar trabalho e espera a
+  tentativa em andamento; se o prazo de parada acabar antes, ela é cancelada, a
+  transação é desfeita e o lease devolve a operação a outro worker.
+
+O `correlationId` dos eventos emitidos por uma retomada é
+`pending-reference-<transactionId>`, já que não há requisição que os origine.
 
 ## Autenticação e autorização
 
@@ -221,8 +246,8 @@ encontra, reaproveita nem reenvia uma operação de outro.
 gerenciados por `fx.Lifecycle`. A inicialização valida a configuração, consulta o
 banco e só então abre o listener, para que uma falha impeça a subida em vez de
 ocorrer em segundo plano. O encerramento segue a ordem inversa: o servidor para
-de aceitar conexões e conclui as em andamento, e só depois o pool do banco é
-fechado. Um teste valida o grafo de dependências do Fx sem precisar de banco.
+de aceitar conexões e conclui as em andamento, o worker de referências pendentes
+conclui a tentativa em andamento, e só depois o pool do banco é fechado. Um teste valida o grafo de dependências do Fx sem precisar de banco.
 
 ## HTTP
 
@@ -258,7 +283,5 @@ resposta é `503`, que o cliente pode repetir com segurança graças à idempot�
 
 ## Trabalho não concluído
 
-- **Retomada de `PENDING_REFERENCE`** por um worker com backoff exponencial e
-  expiração por tentativas.
 - **Publicação da outbox** e **inbox**, com SQS em filas FIFO e DLQ.
 - **Reconciliação** e **observabilidade** além dos logs JSON.

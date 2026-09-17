@@ -16,7 +16,8 @@ INSERT INTO wager_transactions (
     reference_external_transaction_id,
     reference_transaction_id,
     failure_code,
-    result_balance_minor
+    result_balance_minor,
+    next_attempt_at
 ) VALUES (
     @id,
     @kind,
@@ -34,7 +35,8 @@ INSERT INTO wager_transactions (
     sqlc.narg(reference_external_transaction_id),
     sqlc.narg(reference_transaction_id),
     sqlc.narg(failure_code),
-    sqlc.narg(result_balance_minor)
+    sqlc.narg(result_balance_minor),
+    CASE WHEN @state::text = 'PENDING_REFERENCE' THEN now() END
 );
 
 -- name: SelectWagerTransactionByIdempotencyKey :one
@@ -57,3 +59,35 @@ SELECT EXISTS (
       AND kind IN ('REFUND', 'ROLLBACK')
       AND state = 'PROCESSED'
 );
+
+-- name: SelectWagerTransactionByID :one
+SELECT *
+FROM wager_transactions
+WHERE id = @id;
+
+-- name: LeasePendingReferences :many
+UPDATE wager_transactions
+SET next_attempt_at = sqlc.arg(lease_until)::timestamptz,
+    updated_at = now()
+WHERE id IN (
+    SELECT due.id
+    FROM wager_transactions AS due
+    WHERE due.state = 'PENDING_REFERENCE'
+      AND due.next_attempt_at <= sqlc.arg(due_at)::timestamptz
+    ORDER BY due.next_attempt_at
+    LIMIT sqlc.arg(batch_size)::int
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id, wallet_id;
+
+-- name: UpdatePendingReference :execrows
+UPDATE wager_transactions
+SET state = @state,
+    failure_code = sqlc.narg(failure_code),
+    reference_transaction_id = sqlc.narg(reference_transaction_id),
+    result_balance_minor = sqlc.narg(result_balance_minor),
+    reference_attempts = @reference_attempts,
+    next_attempt_at = sqlc.narg(next_attempt_at),
+    updated_at = now()
+WHERE id = @id
+  AND state = 'PENDING_REFERENCE';

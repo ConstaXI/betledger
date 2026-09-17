@@ -51,6 +51,15 @@ type WalletRepository interface {
 	UpdateBalance(ctx context.Context, w *wallet.Wallet, expectedVersion int64) error
 }
 
+// PendingReference identifies an operation leased for another attempt to
+// resolve its reference.
+type PendingReference struct {
+	TransactionID domain.ID
+	// WalletID is locked before the operation is read again, as every change to
+	// the wallet's operations requires.
+	WalletID domain.ID
+}
+
 // TransactionRepository persists wager transactions. Writes must run within a
 // transaction.
 type TransactionRepository interface {
@@ -65,6 +74,18 @@ type TransactionRepository interface {
 	// HasProcessedReversal reports whether a REFUND or a ROLLBACK of the
 	// operation was already processed.
 	HasProcessedReversal(ctx context.Context, referenceID domain.ID) (bool, error)
+	// FindByID returns the operation, and false when there is none.
+	FindByID(ctx context.Context, id domain.ID) (*wager.Transaction, bool, error)
+	// LeasePendingReferences takes up to limit operations in PENDING_REFERENCE
+	// whose next attempt is due and postpones them to leaseUntil, so that other
+	// workers skip them meanwhile. An operation whose worker dies is taken again
+	// once the lease runs out.
+	LeasePendingReferences(ctx context.Context, dueAt, leaseUntil time.Time, limit int) ([]PendingReference, error)
+	// UpdatePendingReference stores the outcome of another attempt on an
+	// operation still in PENDING_REFERENCE, with the next attempt at
+	// nextAttemptAt when it keeps waiting. It returns ErrConcurrentUpdate when
+	// the operation is no longer waiting.
+	UpdatePendingReference(ctx context.Context, transaction *wager.Transaction, nextAttemptAt time.Time) error
 }
 
 // LedgerRepository persists the append-only wallet ledger. Writes must run

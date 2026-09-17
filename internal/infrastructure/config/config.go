@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
+	"time"
 )
 
 // Config holds the validated application configuration.
@@ -20,38 +22,69 @@ type Config struct {
 	OIDCDiscoveryURL string
 	// OIDCAudience must appear in the aud claim of every accepted token.
 	OIDCAudience string
+	// ReferenceMaxAttempts is how many attempts may find no concluded reference
+	// before the operation is rejected with REFERENCE_NOT_FOUND.
+	ReferenceMaxAttempts int
+	// ReferenceRetryBaseDelay is the wait after the first unsuccessful attempt,
+	// doubled after each further one.
+	ReferenceRetryBaseDelay time.Duration
+	// ReferenceRetryMaxDelay caps the wait between two attempts.
+	ReferenceRetryMaxDelay time.Duration
+	// ReferenceRetryLease is how long a worker holds the operations it took
+	// before another worker may take them.
+	ReferenceRetryLease time.Duration
+	// ReferencePollInterval is how often an idle worker looks for due
+	// operations.
+	ReferencePollInterval time.Duration
 }
 
 // Load reads the configuration from the environment and fails when a required
 // value is missing or invalid.
 func Load() (Config, error) {
+	var errs []error
 	cfg := Config{
-		HTTPPort:         envOrDefault("HTTP_PORT", "8080"),
-		DatabaseURL:      os.Getenv("DATABASE_URL"),
-		OIDCIssuerURL:    os.Getenv("OIDC_ISSUER_URL"),
-		OIDCDiscoveryURL: envOrDefault("OIDC_DISCOVERY_URL", os.Getenv("OIDC_ISSUER_URL")),
-		OIDCAudience:     envOrDefault("OIDC_AUDIENCE", "betledger-api"),
+		HTTPPort:                envOrDefault("HTTP_PORT", "8080"),
+		DatabaseURL:             os.Getenv("DATABASE_URL"),
+		OIDCIssuerURL:           os.Getenv("OIDC_ISSUER_URL"),
+		OIDCDiscoveryURL:        envOrDefault("OIDC_DISCOVERY_URL", os.Getenv("OIDC_ISSUER_URL")),
+		OIDCAudience:            envOrDefault("OIDC_AUDIENCE", "betledger-api"),
+		ReferenceMaxAttempts:    intOrDefault("REFERENCE_MAX_ATTEMPTS", 8, &errs),
+		ReferenceRetryBaseDelay: durationOrDefault("REFERENCE_RETRY_BASE_DELAY", time.Second, &errs),
+		ReferenceRetryMaxDelay:  durationOrDefault("REFERENCE_RETRY_MAX_DELAY", 5*time.Minute, &errs),
+		ReferenceRetryLease:     durationOrDefault("REFERENCE_RETRY_LEASE", 30*time.Second, &errs),
+		ReferencePollInterval:   durationOrDefault("REFERENCE_POLL_INTERVAL", time.Second, &errs),
 	}
-	if err := cfg.validate(); err != nil {
+	errs = append(errs, cfg.validate())
+	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid config: %w", err)
 	}
 	return cfg, nil
 }
 
 func (c Config) validate() error {
+	var errs []error
 	if c.HTTPPort == "" {
-		return errors.New("HTTP_PORT cannot be empty")
+		errs = append(errs, errors.New("HTTP_PORT cannot be empty"))
 	}
 	if c.DatabaseURL == "" {
-		return errors.New("DATABASE_URL is required")
+		errs = append(errs, errors.New("DATABASE_URL is required"))
 	}
 	if c.OIDCIssuerURL == "" {
-		return errors.New("OIDC_ISSUER_URL is required")
+		errs = append(errs, errors.New("OIDC_ISSUER_URL is required"))
 	}
 	if c.OIDCAudience == "" {
-		return errors.New("OIDC_AUDIENCE cannot be empty")
+		errs = append(errs, errors.New("OIDC_AUDIENCE cannot be empty"))
 	}
-	return nil
+	if c.ReferenceMaxAttempts < 1 {
+		errs = append(errs, errors.New("REFERENCE_MAX_ATTEMPTS must be at least 1"))
+	}
+	if c.ReferenceRetryBaseDelay <= 0 || c.ReferenceRetryMaxDelay < c.ReferenceRetryBaseDelay {
+		errs = append(errs, errors.New("REFERENCE_RETRY_BASE_DELAY must be positive and at most REFERENCE_RETRY_MAX_DELAY"))
+	}
+	if c.ReferenceRetryLease <= 0 || c.ReferencePollInterval <= 0 {
+		errs = append(errs, errors.New("REFERENCE_RETRY_LEASE and REFERENCE_POLL_INTERVAL must be positive"))
+	}
+	return errors.Join(errs...)
 }
 
 func envOrDefault(key, fallback string) string {
@@ -59,4 +92,28 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func intOrDefault(key string, fallback int, errs *[]error) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf("%s must be an integer, got %q", key, value))
+	}
+	return parsed
+}
+
+func durationOrDefault(key string, fallback time.Duration, errs *[]error) time.Duration {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf("%s must be a duration such as 1s or 5m, got %q", key, value))
+	}
+	return parsed
 }

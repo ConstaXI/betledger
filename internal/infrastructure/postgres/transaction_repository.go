@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -121,6 +122,86 @@ func (r *TransactionRepository) FindByExternalID(
 	return rehydrateTransaction(row, err)
 }
 
+// FindByID returns the operation with the identifier.
+func (r *TransactionRepository) FindByID(ctx context.Context, id domain.ID) (*wager.Transaction, bool, error) {
+	q, err := queries(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	row, err := q.SelectWagerTransactionByID(ctx, id)
+	return rehydrateTransaction(row, err)
+}
+
+// LeasePendingReferences postpones the due operations in PENDING_REFERENCE to
+// leaseUntil in a single statement, skipping rows another worker holds.
+func (r *TransactionRepository) LeasePendingReferences(
+	ctx context.Context,
+	dueAt, leaseUntil time.Time,
+	limit int,
+) ([]usecase.PendingReference, error) {
+	q, err := queries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.LeasePendingReferences(ctx, sqlcgen.LeasePendingReferencesParams{
+		LeaseUntil: leaseUntil,
+		DueAt:      dueAt,
+		BatchSize:  int32(limit),
+	})
+	if err != nil {
+		return nil, translate(err)
+	}
+	leased := make([]usecase.PendingReference, 0, len(rows))
+	for _, row := range rows {
+		leased = append(leased, usecase.PendingReference{TransactionID: row.ID, WalletID: row.WalletID})
+	}
+	return leased, nil
+}
+
+// UpdatePendingReference stores the outcome of another attempt, only while the
+// operation is still in PENDING_REFERENCE.
+func (r *TransactionRepository) UpdatePendingReference(
+	ctx context.Context,
+	transaction *wager.Transaction,
+	nextAttemptAt time.Time,
+) error {
+	q, err := queries(ctx)
+	if err != nil {
+		return err
+	}
+
+	params := sqlcgen.UpdatePendingReferenceParams{
+		ID:                transaction.ID(),
+		State:             transaction.State().String(),
+		FailureCode:       optional(string(transaction.FailureCode())),
+		ReferenceAttempts: int32(transaction.ReferenceAttempts()),
+	}
+	if referenceID, ok := transaction.ReferenceTransactionID(); ok {
+		params.ReferenceTransactionID = &referenceID
+	}
+	if balance, ok := transaction.ResultBalance(); ok {
+		minorUnits := balance.MinorUnits()
+		params.ResultBalanceMinor = &minorUnits
+	}
+	if transaction.State() == wager.StatePendingReference {
+		params.NextAttemptAt = &nextAttemptAt
+	}
+
+	updated, err := q.UpdatePendingReference(ctx, params)
+	if isUniqueViolation(err, transactionsOneReversalPerRef) {
+		return domain.ConflictError(domain.FailureCodeReferenceAlreadyReversed,
+			"reference %q from provider %s was already reversed",
+			transaction.ReferenceExternalTransactionID(), transaction.ProviderID())
+	}
+	if err != nil {
+		return translate(err)
+	}
+	if updated == 0 {
+		return usecase.ErrConcurrentUpdate
+	}
+	return nil
+}
+
 func rehydrateTransaction(row sqlcgen.WagerTransaction, err error) (*wager.Transaction, bool, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
@@ -152,6 +233,7 @@ func rehydrateTransaction(row sqlcgen.WagerTransaction, err error) (*wager.Trans
 		RoundID:                        value(row.RoundID),
 		GameID:                         value(row.GameID),
 		ReferenceExternalTransactionID: value(row.ReferenceExternalTransactionID),
+		ReferenceAttempts:              int(row.ReferenceAttempts),
 		FailureCode:                    domain.FailureCode(value(row.FailureCode)),
 	}
 	if row.ReferenceTransactionID != nil {

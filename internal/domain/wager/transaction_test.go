@@ -782,3 +782,81 @@ func TestTransactionResolveReference(t *testing.T) {
 		})
 	}
 }
+
+func TestTransactionRecordMissingReference(t *testing.T) {
+	t.Parallel()
+
+	pending := func(*wager.Transaction) error { return nil }
+	waiting := func(transaction *wager.Transaction) error { return transaction.MarkPendingReference() }
+	waitedTwice := func(transaction *wager.Transaction) error {
+		return errors.Join(
+			transaction.MarkPendingReference(),
+			transaction.RecordMissingReference(8),
+			transaction.RecordMissingReference(8),
+		)
+	}
+
+	tests := []struct {
+		name            string
+		prepare         func(transaction *wager.Transaction) error
+		maxAttempts     int
+		wantErr         error
+		wantState       wager.State
+		wantFailureCode domain.FailureCode
+		wantAttempts    int
+	}{
+		{
+			name:         "should accept when attempts remain, keeping the operation waiting",
+			prepare:      waiting,
+			maxAttempts:  3,
+			wantState:    wager.StatePendingReference,
+			wantAttempts: 1,
+		},
+		{
+			name:            "should report REFERENCE_NOT_FOUND when the last attempt is spent",
+			prepare:         waitedTwice,
+			maxAttempts:     3,
+			wantState:       wager.StateRejected,
+			wantFailureCode: domain.FailureCodeReferenceNotFound,
+			wantAttempts:    3,
+		},
+		{
+			name:            "should report REFERENCE_NOT_FOUND when a single attempt is allowed",
+			prepare:         waiting,
+			maxAttempts:     1,
+			wantState:       wager.StateRejected,
+			wantFailureCode: domain.FailureCodeReferenceNotFound,
+			wantAttempts:    1,
+		},
+		{
+			name:        "should return INVALID_STATE_TRANSITION when the operation is not waiting",
+			prepare:     pending,
+			maxAttempts: 3,
+			wantErr:     domain.FailureCodeInvalidStateTransition,
+			wantState:   wager.StatePending,
+		},
+		{
+			name:        "should return INVALID_INPUT when no attempt is allowed",
+			prepare:     waiting,
+			maxAttempts: 0,
+			wantErr:     domain.FailureCodeInvalidInput,
+			wantState:   wager.StatePendingReference,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			transaction := domaintest.MustExternalTransaction(t, wager.KindRefund, "25.00")
+			require.NoError(t, test.prepare(transaction))
+
+			err := transaction.RecordMissingReference(test.maxAttempts)
+
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantState, transaction.State())
+			assert.Equal(t, test.wantFailureCode, transaction.FailureCode())
+			assert.Equal(t, test.wantAttempts, transaction.ReferenceAttempts())
+		})
+	}
+}

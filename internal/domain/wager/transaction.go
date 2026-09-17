@@ -47,6 +47,9 @@ type Transaction struct {
 	// referenceTransactionID is the internal identifier the reference resolved
 	// to, nil until resolution.
 	referenceTransactionID domain.ID
+	// referenceAttempts counts the attempts that found no concluded reference;
+	// reaching the maximum rejects the operation with REFERENCE_NOT_FOUND.
+	referenceAttempts int
 
 	// failureCode explains a REJECTED or FAILED outcome.
 	failureCode domain.FailureCode
@@ -173,6 +176,7 @@ type RehydrateParams struct {
 	GameID                         string
 	ReferenceExternalTransactionID string
 	ReferenceTransactionID         domain.ID
+	ReferenceAttempts              int
 	FailureCode                    domain.FailureCode
 	ResultBalance                  *money.Money
 }
@@ -198,6 +202,10 @@ func Rehydrate(params RehydrateParams) (*Transaction, error) {
 	if err := params.Money.Validate(); err != nil {
 		return nil, err
 	}
+	if params.ReferenceAttempts < 0 {
+		return nil, domain.ValidationError(domain.FailureCodeInvalidInput,
+			"reference attempts cannot be negative, got %d", params.ReferenceAttempts)
+	}
 
 	return &Transaction{
 		id:                             params.ID,
@@ -214,6 +222,7 @@ func Rehydrate(params RehydrateParams) (*Transaction, error) {
 		gameID:                         params.GameID,
 		referenceExternalTransactionID: params.ReferenceExternalTransactionID,
 		referenceTransactionID:         params.ReferenceTransactionID,
+		referenceAttempts:              params.ReferenceAttempts,
 		failureCode:                    params.FailureCode,
 		resultBalance:                  params.ResultBalance,
 	}, nil
@@ -261,6 +270,25 @@ func (t *Transaction) MarkPendingReference() error {
 			"%s %s does not depend on a reference", t.kind, t.externalTransactionID)
 	}
 	return t.transitionTo(StatePendingReference)
+}
+
+// RecordMissingReference counts an attempt that still found no concluded
+// reference. When the attempts reach maxAttempts, the operation is rejected with
+// FailureCodeReferenceNotFound; otherwise it keeps waiting.
+func (t *Transaction) RecordMissingReference(maxAttempts int) error {
+	if maxAttempts < 1 {
+		return domain.ValidationError(domain.FailureCodeInvalidInput,
+			"the maximum of reference attempts must be at least 1, got %d", maxAttempts)
+	}
+	if t.state != StatePendingReference {
+		return domain.ValidationError(domain.FailureCodeInvalidStateTransition,
+			"only an operation in %s waits for its reference, got %s", StatePendingReference, t.state)
+	}
+	t.referenceAttempts++
+	if t.referenceAttempts < maxAttempts {
+		return nil
+	}
+	return t.MarkRejected(domain.FailureCodeReferenceNotFound)
 }
 
 // MarkProcessed concludes the operation successfully, keeping the observed
@@ -393,6 +421,9 @@ func (t *Transaction) ReferenceTransactionID() (domain.ID, bool) {
 	}
 	return t.referenceTransactionID, true
 }
+
+// ReferenceAttempts returns how many attempts found no concluded reference.
+func (t *Transaction) ReferenceAttempts() int { return t.referenceAttempts }
 
 // ResultBalance returns the balance observed on conclusion, if any.
 func (t *Transaction) ResultBalance() (money.Money, bool) {

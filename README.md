@@ -23,8 +23,7 @@ O projeto está em construção incremental. O que existe hoje:
 - **Health checks** — liveness em `GET /health/live` e readiness, que checa o
   banco, em `GET /health/ready`.
 
-Ainda **não** existem: o worker que retoma operações em `PENDING_REFERENCE`, as
-rotas de leitura, SQS e o worker que publica a outbox. A seção
+Ainda **não** existem: as rotas de leitura, SQS e o worker que publica a outbox. A seção
 [Próximos passos](#próximos-passos) lista a ordem prevista.
 
 ## Pré-requisitos
@@ -80,6 +79,11 @@ make run          # inicia a aplicação
 | `OIDC_ISSUER_URL` | sim | — | Emissor dos tokens; a descoberta OIDC fornece as chaves de assinatura |
 | `OIDC_DISCOVERY_URL` | não | `OIDC_ISSUER_URL` | Endereço de onde buscar a descoberta OIDC, quando o Keycloak é alcançado por outro endereço |
 | `OIDC_AUDIENCE` | não | `betledger-api` | Audiência exigida no claim `aud` |
+| `REFERENCE_MAX_ATTEMPTS` | não | `8` | Tentativas sem encontrar a referência antes de recusar com `REFERENCE_NOT_FOUND` |
+| `REFERENCE_RETRY_BASE_DELAY` | não | `1s` | Espera após a primeira tentativa sem sucesso; dobra a cada nova |
+| `REFERENCE_RETRY_MAX_DELAY` | não | `5m` | Teto da espera entre tentativas |
+| `REFERENCE_RETRY_LEASE` | não | `30s` | Por quanto tempo um worker reserva as operações que tomou |
+| `REFERENCE_POLL_INTERVAL` | não | `1s` | Intervalo com que o worker ocioso procura operações vencidas |
 
 A configuração é validada na inicialização, e o banco é consultado antes de o
 servidor abrir a porta: sem `DATABASE_URL` ou `OIDC_ISSUER_URL`, com o banco
@@ -220,7 +224,10 @@ O header `Idempotency-Key` é obrigatório.
 A referência precisa estar `PROCESSED` e ser do mesmo jogador, carteira, moeda e
 rodada; numa reversão, também do mesmo valor. Cada operação é revertida no
 máximo uma vez. Se a referência ainda não chegou, a operação fica em
-`PENDING_REFERENCE` e não move dinheiro.
+`PENDING_REFERENCE` e não move dinheiro. Um worker em segundo plano tenta de novo
+com backoff exponencial, inclusive depois de um reinício, e a conclui quando a
+referência chega — ou a recusa com `REFERENCE_NOT_FOUND` quando as tentativas
+acabam.
 
 | Status | Quando |
 | --- | --- |
@@ -321,6 +328,7 @@ internal/infrastructure/auth/        validação dos access tokens do Keycloak
 internal/infrastructure/config/      carga e validação da configuração de ambiente
 internal/infrastructure/httpserver/  handlers, middleware e ciclo de vida do servidor
 internal/infrastructure/postgres/    repositórios, migrations e queries do sqlc
+internal/infrastructure/worker/      workers em segundo plano, como a retomada de referências pendentes
 test/integration/                    testes de integração, só os testes
 test/testenv/                        containers, aplicação e helpers dos testes de integração
 ```
@@ -334,7 +342,5 @@ implementando as portas dos casos de uso.
 
 Na ordem prevista, seguindo [SPECS.md](SPECS.md):
 
-1. Worker que retoma operações em `PENDING_REFERENCE`, com backoff e expiração
-   (seção 7).
-2. SQS com inbox e o worker de publicação da outbox (seções 10 e 11).
-3. Rotas de leitura, observabilidade e reconciliação (seções 9 e 12).
+1. SQS com inbox e o worker de publicação da outbox (seções 10 e 11).
+2. Rotas de leitura, observabilidade e reconciliação (seções 9 e 12).

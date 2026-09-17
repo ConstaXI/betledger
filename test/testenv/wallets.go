@@ -46,6 +46,20 @@ func (p *Postgres) NewUseCases() UseCases {
 	}
 }
 
+// NewResolver wires the use case that retries operations waiting for a
+// reference to the database, with the given policy.
+func (p *Postgres) NewResolver(policy usecase.ReferenceRetryPolicy) *usecase.ResolvePendingReferences {
+	return usecase.NewResolvePendingReferences(
+		postgres.NewTransactor(p.Pool),
+		postgres.NewWalletRepository(),
+		postgres.NewTransactionRepository(),
+		postgres.NewLedgerRepository(),
+		postgres.NewOutboxRepository(),
+		time.Now,
+		policy,
+	)
+}
+
 // MustOpenWallet opens a wallet for a new player through the use case.
 func (u UseCases) MustOpenWallet(t *testing.T, balance money.Money) *wallet.Wallet {
 	t.Helper()
@@ -248,4 +262,41 @@ func (p *Postgres) WalletExists(t *testing.T, walletID domain.ID) bool {
 	require.NoError(t, p.Pool.QueryRow(context.Background(),
 		"SELECT EXISTS (SELECT 1 FROM wallets WHERE id = $1)", walletID).Scan(&exists))
 	return exists
+}
+
+// OperationRecord is the stored outcome of an operation.
+type OperationRecord struct {
+	State             string
+	FailureCode       string
+	ReferenceAttempts int
+}
+
+// Operation reads the stored outcome of the operation provider-a sent on the
+// wallet with the external identifier, scoped as WagerInput scopes it.
+func (p *Postgres) Operation(t *testing.T, w *wallet.Wallet, externalID string) OperationRecord {
+	t.Helper()
+
+	var record OperationRecord
+	require.NoError(t, p.Pool.QueryRow(context.Background(), `
+		SELECT state, COALESCE(failure_code, ''), reference_attempts
+		FROM wager_transactions
+		WHERE provider_id = 'provider-a' AND external_transaction_id = $1`,
+		w.ID().String()+":"+externalID).Scan(&record.State, &record.FailureCode, &record.ReferenceAttempts))
+	return record
+}
+
+// AbandonPendingReferences leases the due operations waiting for a reference
+// without ever trying them, as a worker that dies right after taking them.
+func (p *Postgres) AbandonPendingReferences(t *testing.T, lease time.Duration) int {
+	t.Helper()
+
+	var leased []usecase.PendingReference
+	now := time.Now()
+	require.NoError(t, postgres.NewTransactor(p.Pool).WithinTransaction(context.Background(),
+		func(ctx context.Context) error {
+			var err error
+			leased, err = postgres.NewTransactionRepository().LeasePendingReferences(ctx, now, now.Add(lease), 100)
+			return err
+		}))
+	return len(leased)
 }

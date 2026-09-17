@@ -42,6 +42,8 @@ type WagerTransaction struct {
 	ResultBalanceMinor             *int64
 	CreatedAt                      time.Time
 	UpdatedAt                      time.Time
+	ReferenceAttempts              int32
+	NextAttemptAt                  *time.Time
 }
 
 type Wallet struct {

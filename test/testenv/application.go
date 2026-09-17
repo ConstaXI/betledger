@@ -41,6 +41,14 @@ func StartApplication(
 		OIDCIssuerURL:    identityProvider.IssuerURL,
 		OIDCDiscoveryURL: identityProvider.IssuerURL,
 		OIDCAudience:     Audience,
+		// The worker of an application started by a test never runs unless the
+		// test shortens the interval, so it does not touch the operations other
+		// tests left waiting in the shared database.
+		ReferenceMaxAttempts:    8,
+		ReferenceRetryBaseDelay: time.Minute,
+		ReferenceRetryMaxDelay:  5 * time.Minute,
+		ReferenceRetryLease:     30 * time.Second,
+		ReferencePollInterval:   time.Hour,
 	}
 	for _, option := range options {
 		option(&cfg)
