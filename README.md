@@ -23,8 +23,7 @@ O projeto está em construção incremental. O que existe hoje:
   banco, em `GET /health/ready`.
 
 Ainda **não** existem: reversões (`REFUND`, `ROLLBACK`) e `WIN` com referência,
-as rotas de leitura, SQS, o worker que publica a outbox e os testes com várias
-instâncias. A seção
+as rotas de leitura, SQS e o worker que publica a outbox. A seção
 [Próximos passos](#próximos-passos) lista a ordem prevista.
 
 ## Pré-requisitos
@@ -267,6 +266,11 @@ compartilhado e sem precisar do `make infra-up`. Cobrem dois níveis:
   atacando as tabelas diretamente com SQL — e os cenários de concorrência da
   spec, como duas apostas de 80.00 sobre 100.00 e a mesma aposta enviada 50 vezes
   em paralelo.
+- **Várias instâncias**: o binário da aplicação é compilado uma vez e executado
+  como três processos independentes, cada um com sua memória e seu pool de
+  conexões, contra o mesmo banco. As duas apostas de 80.00 chegam a instâncias
+  diferentes, os reenvios vão para a terceira, e a mesma aposta é enviada 50
+  vezes distribuída entre as três.
 - **Aplicação**: a aplicação real composta pelo Fx, chamada por HTTP. Verifica que
   ela sobe e serve, que no encerramento para de aceitar conexões e fecha o pool do
   banco, que o estado sobrevive a um reinício, e que com o banco travado o
@@ -316,8 +320,7 @@ implementando as portas dos casos de uso.
 
 Na ordem prevista, seguindo [SPECS.md](SPECS.md):
 
-1. Testes com pelo menos três instâncias independentes (seção 8).
-2. Reversões e `WIN` com referência, com resolução de referências pendentes
+1. Reversões e `WIN` com referência, com resolução de referências pendentes
    (seções 5 e 8).
-3. SQS com inbox e o worker de publicação da outbox (seções 10 e 11).
-4. Rotas de leitura, observabilidade e reconciliação (seções 9 e 12).
+2. SQS com inbox e o worker de publicação da outbox (seções 10 e 11).
+3. Rotas de leitura, observabilidade e reconciliação (seções 9 e 12).

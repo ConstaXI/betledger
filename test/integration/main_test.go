@@ -14,6 +14,7 @@ import (
 var (
 	database         *testenv.Postgres
 	identityProvider *testenv.Keycloak
+	binary           *testenv.Binary
 	useCases         testenv.UseCases
 )
 
@@ -33,7 +34,16 @@ func TestMain(m *testing.M) {
 		log.Fatalf("start keycloak: %v", err)
 	}
 
+	binary, err = testenv.BuildBinary(context.Background())
+	if err != nil {
+		binary.Remove()
+		identityProvider.Terminate()
+		database.Terminate()
+		log.Fatalf("build binary: %v", err)
+	}
+
 	code := m.Run()
+	binary.Remove()
 	identityProvider.Terminate()
 	database.Terminate()
 	os.Exit(code)

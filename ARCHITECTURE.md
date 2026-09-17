@@ -107,7 +107,11 @@ versão mudou. As duas defesas são redundantes de propósito: o lock é o mecan
 a versão é a garantia contra lost update caso ele deixe de ser tomado.
 
 Os cenários da spec — duas apostas de 80.00 sobre 100.00 e a mesma aposta enviada
-50 vezes — rodam em paralelo contra o PostgreSQL real, em várias rodadas.
+50 vezes — rodam em paralelo contra o PostgreSQL real, em várias rodadas, tanto
+dentro de um processo quanto distribuídos entre três processos independentes da
+aplicação. Nenhum estado de coordenação vive em memória, então a correção não
+depende de haver uma única instância; os testes com várias instâncias falham se
+o `FOR UPDATE` for removido.
 
 ## Idempotência
 
@@ -222,5 +226,4 @@ resposta é `503`, que o cliente pode repetir com segurança graças à idempot�
 - **Reversões** contra o estado persistido, incluindo a política que impede
   `REFUND` e `ROLLBACK` sobre o mesmo débito.
 - **Publicação da outbox** e **inbox**, com SQS em filas FIFO e DLQ.
-- **Testes com várias instâncias** da aplicação disputando as mesmas carteiras.
 - **Reconciliação** e **observabilidade** além dos logs JSON.
