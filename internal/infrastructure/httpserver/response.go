@@ -14,6 +14,7 @@ const (
 	maxRequestBodyBytes = 1 << 20
 
 	codeUnauthenticated    = "UNAUTHENTICATED"
+	codeForbidden          = "FORBIDDEN"
 	codeServiceUnavailable = "SERVICE_UNAVAILABLE"
 	codeInternalError      = "INTERNAL_ERROR"
 )

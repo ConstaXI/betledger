@@ -2,11 +2,14 @@ package httpserver
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/davibanfi/betledger/internal/infrastructure/auth"
 )
 
 // CorrelationHeader carries the correlation identifier of a request.
@@ -65,13 +68,16 @@ func isValidCorrelationID(id string) bool {
 	return true
 }
 
-// TokenVerifier validates the bearer token of a request.
+// TokenVerifier validates the bearer token of a request and identifies the
+// caller.
 type TokenVerifier interface {
-	Verify(ctx context.Context, rawToken string) error
+	Verify(ctx context.Context, rawToken string) (auth.Principal, error)
 }
 
+type principalKey struct{}
+
 // requireAuthentication answers 401 unless the request carries a bearer token
-// accepted by the verifier.
+// accepted by the verifier, and makes the caller available to the handlers.
 func requireAuthentication(verifier TokenVerifier, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		scheme, token, found := strings.Cut(r.Header.Get("Authorization"), " ")
@@ -79,12 +85,38 @@ func requireAuthentication(verifier TokenVerifier, next http.Handler) http.Handl
 			writeUnauthenticated(w, "a bearer token is required")
 			return
 		}
-		if err := verifier.Verify(r.Context(), token); err != nil {
+		principal, err := verifier.Verify(r.Context(), token)
+		if err != nil {
 			writeUnauthenticated(w, "the bearer token is invalid or expired")
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, principal)))
 	})
+}
+
+// requireRole answers 403 unless the authenticated caller was granted the role.
+func requireRole(role string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !principalFrom(r.Context()).HasRole(role) {
+			writeForbidden(w, fmt.Sprintf("the %s role is required", role))
+			return
+		}
+		next(w, r)
+	}
+}
+
+// principalFrom returns the authenticated caller, or the zero Principal, which
+// holds no role, when the request was not authenticated.
+func principalFrom(ctx context.Context) auth.Principal {
+	principal, _ := ctx.Value(principalKey{}).(auth.Principal)
+	return principal
+}
+
+func writeForbidden(w http.ResponseWriter, message string) {
+	_ = writeJSON(w, http.StatusForbidden, errorResponse{Error: errorDetail{
+		Code:    codeForbidden,
+		Message: message,
+	}})
 }
 
 func writeUnauthenticated(w http.ResponseWriter, message string) {

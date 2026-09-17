@@ -129,9 +129,9 @@ depois de um crédito.
 por TTL, o que dispensa relógio no domínio. Esgotadas as tentativas, a operação
 termina como `REJECTED` com `REFERENCE_NOT_FOUND`.
 
-## Autenticação
+## Autenticação e autorização
 
-**Implementado em parte: autenticação sim, autorização ainda não.** O IdP é o
+**Implementado.** O IdP é o
 Keycloak, recomendado pela spec, que roda no Compose e nos testes com o mesmo
 realm importado de um arquivo versionado. A comunicação é serviço a serviço, então
 cada provedor e o serviço interno de carteiras são clients confidenciais com
@@ -154,6 +154,22 @@ fica fechada, não aberta.
 O Keycloak é descoberto na subida, e a aplicação não sobe se ele estiver
 inacessível. Depois disso, a indisponibilidade dele não afeta as requisições
 enquanto as chaves em cache forem válidas. Ele não entra no readiness por isso.
+
+O modelo de permissões usa **papéis de realm**, porque as permissões são do
+serviço como um todo: `wallet-operator` para o serviço interno, que abre
+carteiras, e `game-provider` para os provedores, que enviam operações. Cada rota
+declara o papel que exige, e token válido sem ele recebe `403`.
+
+A identidade do provedor vem de um claim **`provider_id` fixo no client**, e não
+do id do client (`azp`). Assim, recriar ou renomear um client no Keycloak não
+muda a identidade gravada nas transações. O `providerId` do corpo continua no
+contrato, igual ao da spec e ao payload do SQS, mas precisa bater com o do token:
+divergência é `403`, em vez de o servidor trocar o valor em silêncio.
+
+Com o provedor vindo do token, o isolamento entre provedores sai do modelo de
+dados, e não de checagens espalhadas: a chave de idempotência e o
+`externalTransactionId` já são únicos por provedor, então um provedor nunca
+encontra, reaproveita nem reenvia uma operação de outro.
 
 ## Composição e shutdown
 
@@ -196,8 +212,6 @@ resposta é `503`, que o cliente pode repetir com segurança graças à idempot�
 
 ## Trabalho não concluído
 
-- **Autorização** por papel e isolamento por provedor, com o `providerId`
-  determinado pelo token.
 - **Reversões** contra o estado persistido, incluindo a política que impede
   `REFUND` e `ROLLBACK` sobre o mesmo débito.
 - **Publicação da outbox** e **inbox**, com SQS em filas FIFO e DLQ.

@@ -2,12 +2,14 @@ package httpserver
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
+	"github.com/davibanfi/betledger/internal/infrastructure/auth"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
@@ -33,7 +35,7 @@ func NewWageringHandler(processWager *usecase.ProcessWager, logger *slog.Logger)
 
 // Register mounts the wagering endpoints.
 func (h *WageringHandler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /wagering/transactions", h.handleProcessWager)
+	mux.HandleFunc("POST /wagering/transactions", requireRole(auth.RoleGameProvider, h.handleProcessWager))
 }
 
 type processWagerRequest struct {
@@ -69,6 +71,11 @@ func (h *WageringHandler) handleProcessWager(w http.ResponseWriter, r *http.Requ
 		writeError(w, r, h.logger, err)
 		return
 	}
+	providerID := principalFrom(r.Context()).ProviderID
+	if providerID == "" || request.ProviderID != providerID {
+		writeForbidden(w, fmt.Sprintf("the token does not authorize operations for provider %q", request.ProviderID))
+		return
+	}
 
 	playerID, err := domain.ParseID(request.PlayerID)
 	if err != nil {
@@ -92,7 +99,7 @@ func (h *WageringHandler) handleProcessWager(w http.ResponseWriter, r *http.Requ
 	}
 
 	result, err := h.processWager.Execute(r.Context(), usecase.ProcessWagerInput{
-		ProviderID:                     request.ProviderID,
+		ProviderID:                     providerID,
 		ExternalTransactionID:          request.ExternalTransactionID,
 		IdempotencyKey:                 idempotencyKey,
 		PlayerID:                       playerID,

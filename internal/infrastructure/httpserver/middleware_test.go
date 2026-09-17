@@ -13,6 +13,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/davibanfi/betledger/internal/infrastructure/auth"
 )
 
 func TestWithCorrelationIDKeepsValidHeader(t *testing.T) {
@@ -68,9 +70,19 @@ func TestWithCorrelationIDReplacesUnsafeHeader(t *testing.T) {
 
 var errRejectedToken = errors.New("fake: token rejected")
 
-type fakeTokenVerifier struct{ err error }
+var (
+	walletOperator = auth.Principal{Roles: []string{auth.RoleWalletOperator}}
+	providerA      = auth.Principal{Roles: []string{auth.RoleGameProvider}, ProviderID: "provider-a"}
+)
 
-func (f fakeTokenVerifier) Verify(context.Context, string) error { return f.err }
+type fakeTokenVerifier struct {
+	principal auth.Principal
+	err       error
+}
+
+func (f fakeTokenVerifier) Verify(context.Context, string) (auth.Principal, error) {
+	return f.principal, f.err
+}
 
 type probeRoute struct{ calls *int }
 
@@ -199,6 +211,59 @@ func TestRequireAuthentication(t *testing.T) {
 			assert.Equal(t, test.wantCode, body.Error.Code)
 			assert.Equal(t, test.wantChallenge, recorder.Header().Get("WWW-Authenticate"))
 			assert.Equal(t, test.wantProtectedCall, calls)
+		})
+	}
+}
+
+func TestRequireRole(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		principal  auth.Principal
+		wantStatus int
+		wantCode   string
+		wantCalls  int
+	}{
+		{
+			name:       "should accept when the caller holds the role",
+			principal:  walletOperator,
+			wantStatus: http.StatusNoContent,
+			wantCalls:  1,
+		},
+		{
+			name:       "should return FORBIDDEN when the caller holds another role",
+			principal:  providerA,
+			wantStatus: http.StatusForbidden,
+			wantCode:   "FORBIDDEN",
+		},
+		{
+			name:       "should return FORBIDDEN when the caller holds no role",
+			wantStatus: http.StatusForbidden,
+			wantCode:   "FORBIDDEN",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			calls := 0
+			handler := requireRole(auth.RoleWalletOperator, func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				w.WriteHeader(http.StatusNoContent)
+			})
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			request = request.WithContext(context.WithValue(request.Context(), principalKey{}, test.principal))
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, request)
+
+			var body errorResponse
+			_ = json.Unmarshal(recorder.Body.Bytes(), &body)
+			assert.Equal(t, test.wantStatus, recorder.Code)
+			assert.Equal(t, test.wantCode, body.Error.Code)
+			assert.Equal(t, test.wantCalls, calls)
 		})
 	}
 }

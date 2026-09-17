@@ -141,7 +141,7 @@ func TestOpenWalletHandler(t *testing.T) {
 				nil,
 				[]Route{&WalletHandler{openWallet: opener, logger: slog.New(slog.DiscardHandler)}},
 				nil,
-				fakeTokenVerifier{},
+				fakeTokenVerifier{principal: walletOperator},
 				slog.New(slog.DiscardHandler),
 			)
 			request := httptest.NewRequest(http.MethodPost, "/wallets", strings.NewReader(test.body))
@@ -172,7 +172,7 @@ func TestOpenWalletHandlerPassesCorrelationIDToTheUseCase(t *testing.T) {
 		nil,
 		[]Route{&WalletHandler{openWallet: opener, logger: slog.New(slog.DiscardHandler)}},
 		nil,
-		fakeTokenVerifier{},
+		fakeTokenVerifier{principal: walletOperator},
 		slog.New(slog.DiscardHandler),
 	)
 	request := httptest.NewRequest(http.MethodPost, "/wallets", strings.NewReader(
@@ -186,4 +186,26 @@ func TestOpenWalletHandlerPassesCorrelationIDToTheUseCase(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, recorder.Code)
 	assert.Equal(t, "req-42", opener.input.CorrelationID)
 	assert.Equal(t, "/wallets/"+opened.ID().String(), recorder.Header().Get("Location"))
+}
+
+func TestOpenWalletHandlerRequiresTheWalletOperatorRole(t *testing.T) {
+	t.Parallel()
+
+	opener := &fakeWalletOpener{}
+	handler := NewHandler(
+		nil,
+		[]Route{&WalletHandler{openWallet: opener, logger: slog.New(slog.DiscardHandler)}},
+		nil,
+		fakeTokenVerifier{principal: providerA},
+		slog.New(slog.DiscardHandler),
+	)
+	request := httptest.NewRequest(http.MethodPost, "/wallets", strings.NewReader(
+		`{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"0.00","currency":"BRL"}}`))
+	request.Header.Set("Authorization", "Bearer token")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	assert.Equal(t, http.StatusForbidden, recorder.Code)
+	assert.Equal(t, 0, opener.calls)
 }

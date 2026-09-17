@@ -14,13 +14,13 @@ O projeto está em construção incremental. O que existe hoje:
   PostgreSQL com migrations e outbox transacional.
 - **Apostas `BET`, `WIN` e `LOSS`** — `POST /wagering/transactions`, com
   idempotência persistente e lock por carteira.
-- **Autenticação** — Keycloak no Compose; os endpoints de negócio exigem um
-  access token `client_credentials` válido.
+- **Autenticação e autorização** — Keycloak no Compose; os endpoints de negócio
+  exigem um access token `client_credentials` com o papel adequado, e cada
+  provedor só age em nome próprio.
 - **Health checks** — liveness em `GET /health/live` e readiness, que checa o
   banco, em `GET /health/ready`.
 
-Ainda **não** existem: autorização por papel e por provedor, reversões (`REFUND`, `ROLLBACK`) e `WIN`
-com referência, as rotas de leitura, SQS, o worker que publica a outbox e a
+Ainda **não** existem: reversões (`REFUND`, `ROLLBACK`) e `WIN` com referência, as rotas de leitura, SQS, o worker que publica a outbox e a
 aplicação em container. A seção
 [Próximos passos](#próximos-passos) lista a ordem prevista.
 
@@ -98,7 +98,7 @@ ar, e a especificação OpenAPI em
 valida as respostas reais dos handlers contra ela e quebra se um status, campo ou
 formato não estiver documentado.
 
-### Autenticação
+### Autenticação e autorização
 
 Health checks e documentação são públicos; todo o resto exige
 `Authorization: Bearer <token>`. Os tokens vêm do Keycloak pelo grant
@@ -106,19 +106,24 @@ Health checks e documentação são públicos; todo o resto exige
 ([deploy/keycloak/betledger-realm.json](deploy/keycloak/betledger-realm.json))
 tem três clients:
 
-| Client | Papel previsto | Secret (só para desenvolvimento) |
-| --- | --- | --- |
-| `wallet-service` | serviço interno, gerencia carteiras | `wallet-service-secret` |
-| `provider-a` | provedor de jogos | `provider-a-secret` |
-| `provider-b` | provedor de jogos | `provider-b-secret` |
+| Client | Papel | `provider_id` | Secret (só para desenvolvimento) |
+| --- | --- | --- | --- |
+| `wallet-service` | `wallet-operator` | — | `wallet-service-secret` |
+| `provider-a` | `game-provider` | `provider-a` | `provider-a-secret` |
+| `provider-b` | `game-provider` | `provider-b` | `provider-b-secret` |
 
 ```sh
 TOKEN=$(make -s token CLIENT=wallet-service)
 ```
 
-Por enquanto qualquer token válido do realm acessa qualquer endpoint; a
-restrição por papel e por provedor é o próximo passo. Sem token, ou com token
-inválido, expirado ou de outra audiência, a resposta é `401 UNAUTHENTICATED`.
+- `POST /wallets` exige `wallet-operator`.
+- `POST /wagering/transactions` exige `game-provider`, e o `providerId` do corpo
+  precisa ser o do claim `provider_id` do token.
+
+Sem token, ou com token inválido, expirado ou de outra audiência, a resposta é
+`401 UNAUTHENTICATED`; com token válido mas sem permissão, `403 FORBIDDEN`.
+Como o provedor vem do token, a idempotência também fica isolada: a mesma chave
+enviada por outro provedor é outra operação, nunca um replay.
 O console do Keycloak fica em http://localhost:8081, com `admin`/`admin`.
 
 ### Abrir carteira
@@ -213,6 +218,7 @@ Erros seguem sempre o mesmo formato:
 | --- | --- | --- |
 | `400` | Entrada inválida; corrigir e reenviar | `INVALID_INPUT`, `INVALID_AMOUNT`, `TRANSACTION_KIND_NOT_ALLOWED` |
 | `401` | Token ausente, inválido ou expirado | `UNAUTHENTICATED` |
+| `403` | Token válido sem permissão para a operação | `FORBIDDEN` |
 | `404` | Recurso inexistente | `WALLET_NOT_FOUND` |
 | `409` | Conflito com estado já persistido | `WALLET_ALREADY_EXISTS`, `IDEMPOTENCY_CONFLICT` |
 | `422` | Recusa definitiva por regra de negócio | `INSUFFICIENT_FUNDS` |
@@ -248,7 +254,9 @@ compartilhado e sem precisar do `make infra-up`. Cobrem dois níveis:
   banco, que o estado sobrevive a um reinício, e que com o banco travado o
   readiness falha e as escritas respondem `503` dentro do prazo, voltando ao normal
   quando o banco retorna. A autenticação é testada com tokens reais: token
-válido, ausente, malformado, com assinatura de outro token e de outra audiência.
+válido, ausente, malformado, com assinatura de outro token e de outra audiência,
+além de papel errado, provedor se passando por outro e isolamento da
+idempotência entre provedores.
 
 Para rodar um teste específico:
 
@@ -289,10 +297,8 @@ implementando as portas dos casos de uso.
 
 Na ordem prevista, seguindo [SPECS.md](SPECS.md):
 
-1. Autorização: operações de carteira restritas ao serviço interno e `providerId`
-   determinado pelo token (seção 2).
-2. Aplicação em container, para rodar tudo com `docker compose up --build`.
-3. Reversões e `WIN` com referência, com resolução de referências pendentes
+1. Aplicação em container, para rodar tudo com `docker compose up --build`.
+2. Reversões e `WIN` com referência, com resolução de referências pendentes
    (seções 5 e 8).
-4. SQS com inbox e o worker de publicação da outbox (seções 10 e 11).
-5. Rotas de leitura, observabilidade e reconciliação (seções 9 e 12).
+3. SQS com inbox e o worker de publicação da outbox (seções 10 e 11).
+4. Rotas de leitura, observabilidade e reconciliação (seções 9 e 12).

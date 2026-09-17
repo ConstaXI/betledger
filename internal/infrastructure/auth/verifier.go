@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -16,6 +17,26 @@ import (
 )
 
 const identityProviderTimeout = 5 * time.Second
+
+// Roles granted by the identity provider as realm roles.
+const (
+	RoleWalletOperator = "wallet-operator"
+	RoleGameProvider   = "game-provider"
+)
+
+// Principal is the authenticated caller, as stated by a verified token.
+type Principal struct {
+	// Roles are the realm roles granted to the caller.
+	Roles []string
+	// ProviderID is the game provider the caller acts for, taken from the
+	// provider_id claim; empty for callers that are not providers.
+	ProviderID string
+}
+
+// HasRole reports whether the caller was granted the role.
+func (p Principal) HasRole(role string) bool {
+	return slices.Contains(p.Roles, role)
+}
 
 // ErrInvalidToken reports a token that is malformed, expired, not signed by the
 // identity provider, or issued for another issuer or audience.
@@ -50,10 +71,22 @@ func NewTokenVerifier(lc fx.Lifecycle, cfg config.Config) *TokenVerifier {
 	return tokenVerifier
 }
 
-// Verify checks the signature, issuer, audience and expiry of the raw token.
-func (v *TokenVerifier) Verify(ctx context.Context, rawToken string) error {
-	if _, err := v.verifier.Verify(ctx, rawToken); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidToken, err)
+// Verify checks the signature, issuer, audience and expiry of the raw token and
+// returns the caller it identifies.
+func (v *TokenVerifier) Verify(ctx context.Context, rawToken string) (Principal, error) {
+	token, err := v.verifier.Verify(ctx, rawToken)
+	if err != nil {
+		return Principal{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
-	return nil
+
+	var claims struct {
+		RealmAccess struct {
+			Roles []string `json:"roles"`
+		} `json:"realm_access"`
+		ProviderID string `json:"provider_id"`
+	}
+	if err := token.Claims(&claims); err != nil {
+		return Principal{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+	}
+	return Principal{Roles: claims.RealmAccess.Roles, ProviderID: claims.ProviderID}, nil
 }

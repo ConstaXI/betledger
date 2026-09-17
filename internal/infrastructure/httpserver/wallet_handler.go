@@ -8,6 +8,7 @@ import (
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
+	"github.com/davibanfi/betledger/internal/infrastructure/auth"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
@@ -28,7 +29,7 @@ func NewWalletHandler(openWallet *usecase.OpenWallet, logger *slog.Logger) *Wall
 
 // Register mounts the wallet endpoints.
 func (h *WalletHandler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /wallets", h.handleOpenWallet)
+	mux.HandleFunc("POST /wallets", requireRole(auth.RoleWalletOperator, h.handleOpenWallet))
 }
 
 type moneyPayload struct {

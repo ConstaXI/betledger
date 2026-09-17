@@ -19,6 +19,11 @@ info:
     unexpired, and carry the `betledger-api` audience. Health endpoints are
     public.
 
+    Authorization uses realm roles from the token: opening wallets requires
+    `wallet-operator`, granted only to internal services, and sending operations
+    requires `game-provider`. A provider acts only for the provider in its
+    `provider_id` claim.
+
 servers:
   - url: http://localhost:8080
     description: Local development
@@ -39,7 +44,7 @@ paths:
       summary: Open a wallet
       description: |
         Opens a wallet for a player in a currency. A player holds at most one
-        wallet per currency.
+        wallet per currency. Requires the `wallet-operator` role.
 
         With a positive initial balance, the wallet, the `OPENING` transaction,
         its credit ledger entry and the `WagerTransactionProcessed` and
@@ -77,6 +82,8 @@ paths:
           $ref: '#/components/responses/InvalidInput'
         '401':
           $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           description: The player already holds a wallet in this currency.
           headers:
@@ -106,6 +113,9 @@ paths:
         without moving the balance. A `WIN` with `referenceExternalTransactionId`
         and the reversals `REFUND` and `ROLLBACK` are not supported yet and answer
         `400 TRANSACTION_KIND_NOT_ALLOWED`.
+
+        Requires the `game-provider` role, and `providerId` must match the
+        `provider_id` claim of the token; otherwise the answer is `403`.
 
         The operation, its ledger entry and its events are committed together,
         under a lock on the wallet, so concurrent operations on the same wallet
@@ -179,6 +189,8 @@ paths:
           $ref: '#/components/responses/InvalidInput'
         '401':
           $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           description: The wallet does not exist.
           headers:
@@ -360,6 +372,21 @@ components:
             error:
               code: UNAUTHENTICATED
               message: a bearer token is required
+    Forbidden:
+      description: |
+        The caller is authenticated but lacks the role for the endpoint, or the
+        operation names a provider other than the one in the token.
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/CorrelationId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: FORBIDDEN
+              message: the wallet-operator role is required
     ServiceUnavailable:
       description: A dependency is temporarily unavailable. The request can be retried.
       headers:
@@ -458,6 +485,7 @@ components:
         providerId:
           type: string
           minLength: 1
+          description: Must match the `provider_id` claim of the token.
         externalTransactionId:
           type: string
           minLength: 1
@@ -521,7 +549,7 @@ components:
                 Stable failure code, part of the contract. Codes returned so far:
                 `INVALID_INPUT`, `INVALID_AMOUNT`, `AMOUNT_OVERFLOW`,
                 `TRANSACTION_KIND_NOT_ALLOWED`, `WALLET_ALREADY_EXISTS`,
-                `WALLET_NOT_FOUND`, `IDEMPOTENCY_CONFLICT`, `UNAUTHENTICATED`,
+                `WALLET_NOT_FOUND`, `IDEMPOTENCY_CONFLICT`, `UNAUTHENTICATED`, `FORBIDDEN`,
                 `SERVICE_UNAVAILABLE`,
                 `INTERNAL_ERROR`.
             message:

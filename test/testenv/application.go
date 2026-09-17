@@ -147,8 +147,21 @@ type WagerResponse struct {
 }
 
 // SendWager posts the operation to /wagering/transactions, authenticated as
-// provider-a, and returns the status and the decoded body.
+// the realm client named by its providerId, and returns the status and the
+// decoded body.
 func (a *Application) SendWager(t *testing.T, input usecase.ProcessWagerInput) (int, WagerResponse) {
+	t.Helper()
+
+	return a.SendWagerAs(t, input, a.identityProvider.Bearer(t, input.ProviderID))
+}
+
+// SendWagerAs posts the operation with the given Authorization header, which
+// may be empty.
+func (a *Application) SendWagerAs(
+	t *testing.T,
+	input usecase.ProcessWagerInput,
+	authorization string,
+) (int, WagerResponse) {
 	t.Helper()
 
 	payload, err := json.Marshal(map[string]any{
@@ -167,7 +180,7 @@ func (a *Application) SendWager(t *testing.T, input usecase.ProcessWagerInput) (
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", input.IdempotencyKey)
-	request.Header.Set("Authorization", a.identityProvider.Bearer(t, "provider-a"))
+	request.Header.Set("Authorization", authorization)
 	request.Header.Set("X-Correlation-Id", input.CorrelationID)
 
 	response, err := httpClient().Do(request)

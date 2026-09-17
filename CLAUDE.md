@@ -20,7 +20,9 @@ O `make` do usuário tem alias para `make -j24`; o Makefile declara
 Nunca edite `internal/infrastructure/postgres/sqlcgen` à mão: é gerado.
 
 Rotas registradas no grupo Fx `routes` exigem token; só `public_routes` e os
-health checks são públicos. Não registre rota de negócio como pública.
+health checks são públicos. Não registre rota de negócio como pública. Toda rota
+de negócio também declara o papel com `requireRole`, e operações de provedor usam
+o `providerId` do token (`principalFrom`), nunca só o do corpo.
 
 O contrato HTTP vive em `api/openapi.yaml`, escrito à mão. Ao criar ou mudar um
 endpoint, um status ou um campo de resposta, atualize a spec **e** acrescente o

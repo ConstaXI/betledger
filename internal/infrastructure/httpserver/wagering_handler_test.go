@@ -112,6 +112,13 @@ func TestProcessWagerHandler(t *testing.T) {
 			wantCalls:       1,
 		},
 		{
+			name:           "should return 403 FORBIDDEN when the body names another provider",
+			idempotencyKey: "provider-a:transaction-123",
+			body:           strings.Replace(validWagerBody, `"provider-a"`, `"provider-b"`, 1),
+			wantStatus:     http.StatusForbidden,
+			wantCode:       "FORBIDDEN",
+		},
+		{
 			name:       "should return 400 INVALID_INPUT when the idempotency key is missing",
 			body:       validWagerBody,
 			wantStatus: http.StatusBadRequest,
@@ -199,7 +206,7 @@ func TestProcessWagerHandler(t *testing.T) {
 				nil,
 				[]Route{&WageringHandler{processWager: processor, logger: slog.New(slog.DiscardHandler)}},
 				nil,
-				fakeTokenVerifier{},
+				fakeTokenVerifier{principal: providerA},
 				slog.New(slog.DiscardHandler),
 			)
 			request := httptest.NewRequest(http.MethodPost, "/wagering/transactions", strings.NewReader(test.body))
@@ -234,7 +241,7 @@ func TestProcessWagerHandlerPassesTheRequestToTheUseCase(t *testing.T) {
 		nil,
 		[]Route{&WageringHandler{processWager: processor, logger: slog.New(slog.DiscardHandler)}},
 		nil,
-		fakeTokenVerifier{},
+		fakeTokenVerifier{principal: providerA},
 		slog.New(slog.DiscardHandler),
 	)
 	body := strings.Replace(validWagerBody, `"kind":"BET","money":{"amount":"25.00"`,

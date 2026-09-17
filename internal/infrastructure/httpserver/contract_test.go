@@ -21,6 +21,7 @@ import (
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
+	"github.com/davibanfi/betledger/internal/infrastructure/auth"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
@@ -53,6 +54,11 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 		FailureCode:   domain.FailureCodeInsufficientFunds,
 	}
 
+	trusted := fakeTokenVerifier{principal: auth.Principal{
+		Roles:      []string{auth.RoleWalletOperator, auth.RoleGameProvider},
+		ProviderID: "provider-a",
+	}}
+
 	tests := []struct {
 		name           string
 		method         string
@@ -60,7 +66,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 		body           string
 		idempotencyKey string
 		wagerResult    usecase.WagerResult
-		verifierErr    error
+		verifier       fakeTokenVerifier
 		useCaseErr     error
 		checks         []HealthCheck
 		wantStatus     int
@@ -70,6 +76,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			method:     http.MethodPost,
 			path:       "/wallets",
 			body:       validBody,
+			verifier:   trusted,
 			wantStatus: http.StatusCreated,
 		},
 		{
@@ -77,6 +84,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			method:     http.MethodPost,
 			path:       "/wallets",
 			body:       `{"playerId":`,
+			verifier:   trusted,
 			wantStatus: http.StatusBadRequest,
 		},
 		{
@@ -84,6 +92,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			method:     http.MethodPost,
 			path:       "/wallets",
 			body:       `{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"10.123","currency":"BRL"}}`,
+			verifier:   trusted,
 			wantStatus: http.StatusBadRequest,
 		},
 		{
@@ -92,6 +101,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			path:       "/wallets",
 			body:       validBody,
 			useCaseErr: domain.ConflictError(domain.FailureCodeWalletAlreadyExists, "wallet already exists"),
+			verifier:   trusted,
 			wantStatus: http.StatusConflict,
 		},
 		{
@@ -100,6 +110,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			path:       "/wallets",
 			body:       validBody,
 			useCaseErr: usecase.ErrUnavailable,
+			verifier:   trusted,
 			wantStatus: http.StatusServiceUnavailable,
 		},
 		{
@@ -108,6 +119,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			path:       "/wallets",
 			body:       validBody,
 			useCaseErr: errors.New("boom"),
+			verifier:   trusted,
 			wantStatus: http.StatusInternalServerError,
 		},
 		{
@@ -117,6 +129,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			body:           validWagerBody,
 			idempotencyKey: "provider-a:transaction-123",
 			wagerResult:    processed,
+			verifier:       trusted,
 			wantStatus:     http.StatusCreated,
 		},
 		{
@@ -126,6 +139,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			body:           validWagerBody,
 			idempotencyKey: "provider-a:transaction-123",
 			wagerResult:    replayed,
+			verifier:       trusted,
 			wantStatus:     http.StatusOK,
 		},
 		{
@@ -135,6 +149,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			body:           validWagerBody,
 			idempotencyKey: "provider-a:transaction-123",
 			wagerResult:    rejected,
+			verifier:       trusted,
 			wantStatus:     http.StatusUnprocessableEntity,
 		},
 		{
@@ -142,6 +157,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			method:     http.MethodPost,
 			path:       "/wagering/transactions",
 			body:       validWagerBody,
+			verifier:   trusted,
 			wantStatus: http.StatusBadRequest,
 		},
 		{
@@ -151,6 +167,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			body:           validWagerBody,
 			idempotencyKey: "provider-a:transaction-123",
 			useCaseErr:     domain.NotFoundError(domain.FailureCodeWalletNotFound, "wallet not found"),
+			verifier:       trusted,
 			wantStatus:     http.StatusNotFound,
 		},
 		{
@@ -160,6 +177,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			body:           validWagerBody,
 			idempotencyKey: "provider-a:transaction-123",
 			useCaseErr:     domain.ConflictError(domain.FailureCodeIdempotencyConflict, "conflict"),
+			verifier:       trusted,
 			wantStatus:     http.StatusConflict,
 		},
 		{
@@ -169,15 +187,16 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			body:           validWagerBody,
 			idempotencyKey: "provider-a:transaction-123",
 			useCaseErr:     usecase.ErrUnavailable,
+			verifier:       trusted,
 			wantStatus:     http.StatusServiceUnavailable,
 		},
 		{
-			name:        "should match the contract when a wallet is opened without a valid token",
-			method:      http.MethodPost,
-			path:        "/wallets",
-			body:        validBody,
-			verifierErr: errRejectedToken,
-			wantStatus:  http.StatusUnauthorized,
+			name:       "should match the contract when a wallet is opened without a valid token",
+			method:     http.MethodPost,
+			path:       "/wallets",
+			body:       validBody,
+			verifier:   fakeTokenVerifier{err: errRejectedToken},
+			wantStatus: http.StatusUnauthorized,
 		},
 		{
 			name:           "should match the contract when an operation is sent without a valid token",
@@ -185,8 +204,25 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			path:           "/wagering/transactions",
 			body:           validWagerBody,
 			idempotencyKey: "provider-a:transaction-123",
-			verifierErr:    errRejectedToken,
+			verifier:       fakeTokenVerifier{err: errRejectedToken},
 			wantStatus:     http.StatusUnauthorized,
+		},
+		{
+			name:       "should match the contract when a game provider opens a wallet",
+			method:     http.MethodPost,
+			path:       "/wallets",
+			body:       validBody,
+			verifier:   fakeTokenVerifier{principal: providerA},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:           "should match the contract when an operation names another provider",
+			method:         http.MethodPost,
+			path:           "/wagering/transactions",
+			body:           strings.Replace(validWagerBody, `"provider-a"`, `"provider-b"`, 1),
+			idempotencyKey: "provider-a:transaction-123",
+			verifier:       trusted,
+			wantStatus:     http.StatusForbidden,
 		},
 		{
 			name:       "should match the contract when the process is alive",
@@ -223,7 +259,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 					&WageringHandler{processWager: processor, logger: slog.New(slog.DiscardHandler)},
 				},
 				test.checks,
-				fakeTokenVerifier{err: test.verifierErr},
+				test.verifier,
 				slog.New(slog.DiscardHandler),
 			)
 			request := httptest.NewRequest(test.method, "http://localhost:8080"+test.path, strings.NewReader(test.body))
