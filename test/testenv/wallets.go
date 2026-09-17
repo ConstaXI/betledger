@@ -151,3 +151,101 @@ func (p *Postgres) Connections(t *testing.T, applicationName string) int {
 		"SELECT count(*) FROM pg_stat_activity WHERE application_name = $1", applicationName).Scan(&count))
 	return count
 }
+
+// PlayerRecords is everything recorded for a player, in a deterministic order.
+type PlayerRecords struct {
+	Wallets      []WalletRecord
+	Transactions []TransactionRecord
+	Entries      []EntryRecord
+	Events       []EventRecord
+}
+
+// WalletRecord is a stored wallet.
+type WalletRecord struct {
+	BalanceMinor int64
+	Version      int64
+}
+
+// TransactionRecord is a stored wager transaction.
+type TransactionRecord struct {
+	Kind  string
+	State string
+}
+
+// EntryRecord is a stored ledger entry.
+type EntryRecord struct {
+	Direction          string
+	BalanceBeforeMinor int64
+	BalanceAfterMinor  int64
+}
+
+// EventRecord is a stored outbox event.
+type EventRecord struct {
+	Type          string
+	CorrelationID string
+}
+
+// PlayerRecords reads the wallets, transactions, ledger entries and outbox
+// events of the player.
+func (p *Postgres) PlayerRecords(t *testing.T, playerID domain.ID) PlayerRecords {
+	t.Helper()
+
+	ctx := context.Background()
+	var records PlayerRecords
+
+	rows, err := p.Pool.Query(ctx,
+		"SELECT balance_minor, version FROM wallets WHERE player_id = $1 ORDER BY id", playerID)
+	require.NoError(t, err)
+	for rows.Next() {
+		var record WalletRecord
+		require.NoError(t, rows.Scan(&record.BalanceMinor, &record.Version))
+		records.Wallets = append(records.Wallets, record)
+	}
+	require.NoError(t, rows.Err())
+
+	rows, err = p.Pool.Query(ctx,
+		"SELECT kind, state FROM wager_transactions WHERE player_id = $1 ORDER BY id", playerID)
+	require.NoError(t, err)
+	for rows.Next() {
+		var record TransactionRecord
+		require.NoError(t, rows.Scan(&record.Kind, &record.State))
+		records.Transactions = append(records.Transactions, record)
+	}
+	require.NoError(t, rows.Err())
+
+	rows, err = p.Pool.Query(ctx, `
+		SELECT l.direction, l.balance_before_minor, l.balance_after_minor
+		FROM wallet_ledger_entries l JOIN wallets w ON w.id = l.wallet_id
+		WHERE w.player_id = $1 ORDER BY l.id`, playerID)
+	require.NoError(t, err)
+	for rows.Next() {
+		var record EntryRecord
+		require.NoError(t, rows.Scan(&record.Direction, &record.BalanceBeforeMinor, &record.BalanceAfterMinor))
+		records.Entries = append(records.Entries, record)
+	}
+	require.NoError(t, rows.Err())
+
+	rows, err = p.Pool.Query(ctx, `
+		SELECT o.event_type, o.payload->>'correlationId'
+		FROM outbox_events o JOIN wallets w ON w.id = o.aggregate_id
+		WHERE w.player_id = $1 ORDER BY o.event_type`, playerID)
+	require.NoError(t, err)
+	for rows.Next() {
+		var record EventRecord
+		require.NoError(t, rows.Scan(&record.Type, &record.CorrelationID))
+		records.Events = append(records.Events, record)
+	}
+	require.NoError(t, rows.Err())
+
+	return records
+}
+
+// WalletExists reports whether the wallet was stored.
+func (p *Postgres) WalletExists(t *testing.T, walletID domain.ID) bool {
+	t.Helper()
+
+	var exists bool
+	require.NoError(t, p.Pool.QueryRow(context.Background(),
+		"SELECT EXISTS (SELECT 1 FROM wallets WHERE id = $1)", walletID).Scan(&exists))
+	return exists
+}

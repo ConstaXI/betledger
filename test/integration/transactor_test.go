@@ -16,36 +16,56 @@ import (
 	"github.com/davibanfi/betledger/internal/infrastructure/postgres"
 )
 
-func TestTransactorRollsBackWhenTheUnitOfWorkFails(t *testing.T) {
+func TestTransactorWithinTransaction(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	w, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(0, money.MustCurrency("BRL")))
-	require.NoError(t, err)
-	errAbort := errors.New("abort")
+	transactor := postgres.NewTransactor(database.Pool)
+	repository := postgres.NewWalletRepository()
 
-	err = postgres.NewTransactor(database.Pool).WithinTransaction(ctx, func(ctx context.Context) error {
-		require.NoError(t, postgres.NewWalletRepository().Create(ctx, w))
-		return errAbort
-	})
+	tests := []struct {
+		name          string
+		write         func(ctx context.Context, w *wallet.Wallet) error
+		wantFailed    bool
+		wantPersisted bool
+	}{
+		{
+			name: "should accept when the unit of work succeeds, committing the write",
+			write: func(ctx context.Context, w *wallet.Wallet) error {
+				return transactor.WithinTransaction(ctx, func(ctx context.Context) error {
+					return repository.Create(ctx, w)
+				})
+			},
+			wantPersisted: true,
+		},
+		{
+			name: "should roll back when the unit of work fails after writing",
+			write: func(ctx context.Context, w *wallet.Wallet) error {
+				return transactor.WithinTransaction(ctx, func(ctx context.Context) error {
+					return errors.Join(repository.Create(ctx, w), errors.New("abort"))
+				})
+			},
+			wantFailed: true,
+		},
+		{
+			name: "should refuse when a repository writes outside a transaction",
+			write: func(ctx context.Context, w *wallet.Wallet) error {
+				return repository.Create(ctx, w)
+			},
+			wantFailed: true,
+		},
+	}
 
-	assert.ErrorIs(t, err, errAbort)
-	var count int
-	require.NoError(t, database.Pool.QueryRow(ctx, "SELECT count(*) FROM wallets WHERE id = $1", w.ID()).Scan(&count))
-	assert.Equal(t, 0, count)
-}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-func TestRepositoriesRejectWritesOutsideTransaction(t *testing.T) {
-	t.Parallel()
+			w, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(0, money.MustCurrency("BRL")))
+			require.NoError(t, err)
 
-	ctx := context.Background()
-	w, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(0, money.MustCurrency("BRL")))
-	require.NoError(t, err)
+			err = test.write(context.Background(), w)
 
-	err = postgres.NewWalletRepository().Create(ctx, w)
-
-	assert.Error(t, err)
-	var count int
-	require.NoError(t, database.Pool.QueryRow(ctx, "SELECT count(*) FROM wallets WHERE id = $1", w.ID()).Scan(&count))
-	assert.Equal(t, 0, count)
+			assert.Equal(t, test.wantFailed, err != nil)
+			assert.Equal(t, test.wantPersisted, database.WalletExists(t, w.ID()))
+		})
+	}
 }

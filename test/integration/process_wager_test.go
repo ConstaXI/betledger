@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 
@@ -141,97 +142,218 @@ func TestIndependentWalletsAreProcessedConcurrently(t *testing.T) {
 	}
 }
 
-func TestProcessWagerPersistsRejectionsAndReplaysTheOriginalBalance(t *testing.T) {
+func TestProcessWagerExecute(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	brl := money.MustCurrency("BRL")
-	w := useCases.MustOpenWallet(t, money.MustNew(10000, brl))
+	bet := func(externalID string, amountMinor int64) func(w *wallet.Wallet) usecase.ProcessWagerInput {
+		return func(w *wallet.Wallet) usecase.ProcessWagerInput { return testenv.BetInput(w, externalID, amountMinor) }
+	}
+	plain := func(kind wager.Kind, externalID string, amountMinor int64) func(w *wallet.Wallet) usecase.ProcessWagerInput {
+		return func(w *wallet.Wallet) usecase.ProcessWagerInput {
+			return testenv.WagerInput(w, kind, externalID, amountMinor)
+		}
+	}
+	referring := func(
+		kind wager.Kind,
+		externalID, referenceID string,
+		amountMinor int64,
+	) func(w *wallet.Wallet) usecase.ProcessWagerInput {
+		return func(w *wallet.Wallet) usecase.ProcessWagerInput {
+			return testenv.ReferringInput(w, kind, externalID, referenceID, amountMinor)
+		}
+	}
+	type step = func(w *wallet.Wallet) usecase.ProcessWagerInput
 
-	first, err := useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "first", 2500))
-	require.NoError(t, err)
-	_, err = useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "second", 2500))
-	require.NoError(t, err)
-	rejected, err := useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "too-large", 9000))
-	require.NoError(t, err)
+	tests := []struct {
+		name            string
+		earlier         []step
+		input           step
+		wantErr         error
+		wantState       wager.State
+		wantFailureCode domain.FailureCode
+		wantBalance     money.Money
+		wantReplay      bool
+		wantStored      int64
+		wantVersion     int64
+		wantDebits      int
+		wantEvents      map[string]int
+	}{
+		{
+			name:        "should accept when a win credits the wallet",
+			input:       plain(wager.KindWin, "win", 4000),
+			wantState:   wager.StateProcessed,
+			wantBalance: money.MustNew(14000, brl),
+			wantStored:  14000,
+			wantVersion: 2,
+			wantEvents:  map[string]int{"WagerTransactionProcessed": 2, "WalletBalanceChanged": 2},
+		},
+		{
+			name:        "should accept when a loss records the round without moving the balance",
+			input:       plain(wager.KindLoss, "loss", 0),
+			wantState:   wager.StateProcessed,
+			wantBalance: money.MustNew(10000, brl),
+			wantStored:  10000,
+			wantVersion: 1,
+			wantEvents:  map[string]int{"WagerTransactionProcessed": 2, "WalletBalanceChanged": 1},
+		},
+		{
+			name:        "should report a replay when a loss is resent",
+			earlier:     []step{plain(wager.KindLoss, "loss", 0)},
+			input:       plain(wager.KindLoss, "loss", 0),
+			wantState:   wager.StateProcessed,
+			wantBalance: money.MustNew(10000, brl),
+			wantReplay:  true,
+			wantStored:  10000,
+			wantVersion: 1,
+			wantEvents:  map[string]int{"WagerTransactionProcessed": 2, "WalletBalanceChanged": 1},
+		},
+		{
+			name:        "should report a replay with the original balance when a bet is resent after other movements",
+			earlier:     []step{bet("first", 2500), bet("second", 2500)},
+			input:       bet("first", 2500),
+			wantState:   wager.StateProcessed,
+			wantBalance: money.MustNew(7500, brl),
+			wantReplay:  true,
+			wantStored:  5000,
+			wantVersion: 3,
+			wantDebits:  2,
+			wantEvents:  map[string]int{"WagerTransactionProcessed": 3, "WalletBalanceChanged": 3},
+		},
+		{
+			name:            "should report a replay of INSUFFICIENT_FUNDS when the rejected bet is resent",
+			earlier:         []step{bet("too-large", 12000)},
+			input:           bet("too-large", 12000),
+			wantState:       wager.StateRejected,
+			wantFailureCode: domain.FailureCodeInsufficientFunds,
+			wantReplay:      true,
+			wantStored:      10000,
+			wantVersion:     1,
+			wantEvents: map[string]int{
+				"WagerTransactionProcessed": 1, "WalletBalanceChanged": 1, "WagerTransactionRejected": 1,
+			},
+		},
+		{
+			name:        "should return IDEMPOTENCY_CONFLICT when the key is reused with a different payload",
+			earlier:     []step{bet("conflict", 2500)},
+			input:       bet("conflict", 3000),
+			wantErr:     domain.FailureCodeIdempotencyConflict,
+			wantStored:  7500,
+			wantVersion: 2,
+			wantDebits:  1,
+			wantEvents:  map[string]int{"WagerTransactionProcessed": 2, "WalletBalanceChanged": 2},
+		},
+		{
+			name:    "should return IDEMPOTENCY_CONFLICT when the operation is resent with another key",
+			earlier: []step{bet("conflict", 2500)},
+			input: func(w *wallet.Wallet) usecase.ProcessWagerInput {
+				input := testenv.BetInput(w, "conflict", 2500)
+				input.IdempotencyKey += ":another-key"
+				return input
+			},
+			wantErr:     domain.FailureCodeIdempotencyConflict,
+			wantStored:  7500,
+			wantVersion: 2,
+			wantDebits:  1,
+			wantEvents:  map[string]int{"WagerTransactionProcessed": 2, "WalletBalanceChanged": 2},
+		},
+		{
+			name:        "should accept when a win refers to a processed bet",
+			earlier:     []step{bet("bet", 2500)},
+			input:       referring(wager.KindWin, "win", "bet", 4000),
+			wantState:   wager.StateProcessed,
+			wantBalance: money.MustNew(11500, brl),
+			wantStored:  11500,
+			wantVersion: 3,
+			wantDebits:  1,
+			wantEvents:  map[string]int{"WagerTransactionProcessed": 3, "WalletBalanceChanged": 3},
+		},
+		{
+			name:        "should accept when a refund returns a processed bet",
+			earlier:     []step{bet("bet", 2500)},
+			input:       referring(wager.KindRefund, "refund", "bet", 2500),
+			wantState:   wager.StateProcessed,
+			wantBalance: money.MustNew(10000, brl),
+			wantStored:  10000,
+			wantVersion: 3,
+			wantDebits:  1,
+			wantEvents:  map[string]int{"WagerTransactionProcessed": 3, "WalletBalanceChanged": 3},
+		},
+		{
+			name:        "should accept when the refund itself is rolled back",
+			earlier:     []step{bet("bet", 2500), referring(wager.KindRefund, "refund", "bet", 2500)},
+			input:       referring(wager.KindRollback, "rollback", "refund", 2500),
+			wantState:   wager.StateProcessed,
+			wantBalance: money.MustNew(7500, brl),
+			wantStored:  7500,
+			wantVersion: 4,
+			wantDebits:  2,
+			wantEvents:  map[string]int{"WagerTransactionProcessed": 4, "WalletBalanceChanged": 4},
+		},
+		{
+			name:            "should return REFERENCE_ALREADY_REVERSED when a refunded bet is rolled back",
+			earlier:         []step{bet("bet", 2500), referring(wager.KindRefund, "refund", "bet", 2500)},
+			input:           referring(wager.KindRollback, "rollback", "bet", 2500),
+			wantState:       wager.StateRejected,
+			wantFailureCode: domain.FailureCodeReferenceAlreadyReversed,
+			wantStored:      10000,
+			wantVersion:     3,
+			wantDebits:      1,
+			wantEvents: map[string]int{
+				"WagerTransactionProcessed": 3, "WalletBalanceChanged": 3, "WagerTransactionRejected": 1,
+			},
+		},
+		{
+			name:        "should report PENDING_REFERENCE when the referenced bet has not arrived",
+			input:       referring(wager.KindRefund, "early-refund", "late-bet", 1000),
+			wantState:   wager.StatePendingReference,
+			wantStored:  10000,
+			wantVersion: 1,
+			wantEvents: map[string]int{
+				"WagerTransactionProcessed": 1, "WalletBalanceChanged": 1, "WagerTransactionPendingReference": 1,
+			},
+		},
+		{
+			name:        "should report a replay of PENDING_REFERENCE when the waiting refund is resent",
+			earlier:     []step{referring(wager.KindRefund, "early-refund", "late-bet", 1000)},
+			input:       referring(wager.KindRefund, "early-refund", "late-bet", 1000),
+			wantState:   wager.StatePendingReference,
+			wantReplay:  true,
+			wantStored:  10000,
+			wantVersion: 1,
+			wantEvents: map[string]int{
+				"WagerTransactionProcessed": 1, "WalletBalanceChanged": 1, "WagerTransactionPendingReference": 1,
+			},
+		},
+	}
 
-	replayedFirst, err := useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "first", 2500))
-	require.NoError(t, err)
-	replayedRejection, err := useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "too-large", 9000))
-	require.NoError(t, err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	assert.Equal(t, first.TransactionID, replayedFirst.TransactionID)
-	assert.True(t, replayedFirst.IdempotentReplay)
-	assert.Equal(t, money.MustNew(7500, brl), replayedFirst.Balance)
+			ctx := context.Background()
+			w := useCases.MustOpenWallet(t, money.MustNew(10000, brl))
+			var earlierIDs []domain.ID
+			for _, earlier := range test.earlier {
+				result, err := useCases.ProcessWager.Execute(ctx, earlier(w))
+				require.NoError(t, err)
+				earlierIDs = append(earlierIDs, result.TransactionID)
+			}
 
-	assert.Equal(t, wager.StateRejected, rejected.State)
-	assert.Equal(t, rejected.TransactionID, replayedRejection.TransactionID)
-	assert.Equal(t, domain.FailureCodeInsufficientFunds, replayedRejection.FailureCode)
-	assert.True(t, replayedRejection.IdempotentReplay)
+			got, err := useCases.ProcessWager.Execute(ctx, test.input(w))
 
-	balance, version, debits := database.WalletState(t, w.ID())
-	assert.Equal(t, int64(5000), balance)
-	assert.Equal(t, int64(3), version)
-	assert.Equal(t, 2, debits)
-	database.AssertLedgerReconciles(t, w.ID())
-
-	var rejectedEvents int
-	require.NoError(t, database.Pool.QueryRow(ctx,
-		"SELECT count(*) FROM outbox_events WHERE aggregate_id = $1 AND event_type = 'WagerTransactionRejected'",
-		w.ID()).Scan(&rejectedEvents))
-	assert.Equal(t, 1, rejectedEvents)
-}
-
-func TestProcessWagerReportsIdempotencyConflicts(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	w := useCases.MustOpenWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
-	_, err := useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "conflict", 2500))
-	require.NoError(t, err)
-
-	changedPayload := testenv.BetInput(w, "conflict", 3000)
-	otherKey := testenv.BetInput(w, "conflict", 2500)
-	otherKey.IdempotencyKey = "provider-a:conflict:another-key"
-
-	_, errChangedPayload := useCases.ProcessWager.Execute(ctx, changedPayload)
-	_, errOtherKey := useCases.ProcessWager.Execute(ctx, otherKey)
-
-	assert.ErrorIs(t, errChangedPayload, domain.FailureCodeIdempotencyConflict)
-	assert.ErrorIs(t, errOtherKey, domain.FailureCodeIdempotencyConflict)
-	balance, _, debits := database.WalletState(t, w.ID())
-	assert.Equal(t, int64(7500), balance)
-	assert.Equal(t, 1, debits)
-}
-
-func TestProcessWagerSettlesWinsAndLosses(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	brl := money.MustCurrency("BRL")
-	w := useCases.MustOpenWallet(t, money.MustNew(10000, brl))
-
-	bet, err := useCases.ProcessWager.Execute(ctx, testenv.BetInput(w, "bet", 2500))
-	require.NoError(t, err)
-	win, err := useCases.ProcessWager.Execute(ctx, testenv.WagerInput(w, wager.KindWin, "win", 4000))
-	require.NoError(t, err)
-	loss, err := useCases.ProcessWager.Execute(ctx, testenv.WagerInput(w, wager.KindLoss, "loss", 0))
-	require.NoError(t, err)
-	replayedLoss, err := useCases.ProcessWager.Execute(ctx, testenv.WagerInput(w, wager.KindLoss, "loss", 0))
-	require.NoError(t, err)
-
-	assert.Equal(t, money.MustNew(7500, brl), bet.Balance)
-	assert.Equal(t, money.MustNew(11500, brl), win.Balance)
-	assert.Equal(t, wager.StateProcessed, loss.State)
-	assert.Equal(t, money.MustNew(11500, brl), loss.Balance)
-	assert.Equal(t, loss.TransactionID, replayedLoss.TransactionID)
-	assert.True(t, replayedLoss.IdempotentReplay)
-
-	balance, version, debits := database.WalletState(t, w.ID())
-	assert.Equal(t, int64(11500), balance)
-	assert.Equal(t, int64(3), version, "a loss does not change the wallet version")
-	assert.Equal(t, 1, debits)
-	database.AssertLedgerReconciles(t, w.ID())
-	assert.Equal(t, map[string]int{"WagerTransactionProcessed": 4, "WalletBalanceChanged": 3},
-		database.EventCounts(t, w.ID()))
+			stored, version, debits := database.WalletState(t, w.ID())
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantState, got.State)
+			assert.Equal(t, test.wantFailureCode, got.FailureCode)
+			assert.Equal(t, test.wantBalance, got.Balance)
+			assert.Equal(t, test.wantReplay, got.IdempotentReplay)
+			assert.Equal(t, test.wantReplay, slices.Contains(earlierIDs, got.TransactionID))
+			assert.Equal(t, test.wantStored, stored)
+			assert.Equal(t, test.wantVersion, version)
+			assert.Equal(t, test.wantDebits, debits)
+			assert.Equal(t, test.wantEvents, database.EventCounts(t, w.ID()))
+			database.AssertLedgerReconciles(t, w.ID())
+		})
+	}
 }
