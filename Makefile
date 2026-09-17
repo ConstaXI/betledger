@@ -16,16 +16,19 @@ AWS_SECRET_ACCESS_KEY ?= test
 CLIENT ?= provider-a
 export HTTP_PORT DATABASE_URL OIDC_ISSUER_URL OIDC_AUDIENCE AWS_REGION AWS_ENDPOINT_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 
-.PHONY: help dev run infra-up token db-up db-down db-reset migrate-up migrate-down migrate-status \
+.PHONY: help dev run workers infra-up token db-up db-down db-reset migrate-up migrate-down migrate-status \
 	test test-race test-integration vet fmt generate check
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  %-18s %s\n", $$1, $$2}'
 
-dev: infra-up migrate-up run ## Start the infrastructure, apply migrations and run the application
+dev: infra-up migrate-up run ## Start the infrastructure, apply migrations and run the API
 
-run: ## Run the application
-	go run ./cmd/betledger
+run: ## Run the HTTP API
+	go run ./cmd/api
+
+workers: ## Run the background workers
+	go run ./cmd/workers
 
 infra-up: ## Start PostgreSQL, Keycloak and LocalStack and wait until they are healthy
 	docker compose up -d --wait postgres keycloak localstack

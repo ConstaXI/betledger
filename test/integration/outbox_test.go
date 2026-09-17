@@ -143,14 +143,15 @@ func TestConcurrentPublishersDeliverEachEventOnceInWalletOrder(t *testing.T) {
 	}
 }
 
-func TestApplicationPublishesCommittedEvents(t *testing.T) {
+func TestWorkersPublishEventsCommittedByTheAPI(t *testing.T) {
 	t.Parallel()
 
 	isolated := testenv.MustStartPostgres(t)
 	useCases := isolated.NewUseCases()
 	queueName, queueURL := broker.CreateEventsQueue(t)
 	w := useCases.MustOpenWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
-	application := testenv.StartApplication(t, isolated.URL, identityProvider, broker, func(cfg *config.Config) {
+	application := testenv.StartApplication(t, isolated.URL, identityProvider, broker)
+	testenv.StartWorkers(t, isolated.URL, broker, func(cfg *config.Config) {
 		cfg.EventsQueueName = queueName
 		cfg.OutboxPollInterval = 50 * time.Millisecond
 	})

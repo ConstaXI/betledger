@@ -39,7 +39,7 @@ func BuildBinary(ctx context.Context) (*Binary, error) {
 	}
 	binary := &Binary{Path: filepath.Join(dir, "betledger"), dir: dir}
 
-	build := exec.CommandContext(ctx, "go", "build", "-o", binary.Path, "./cmd/betledger")
+	build := exec.CommandContext(ctx, "go", "build", "-o", binary.Path, "./cmd/api")
 	build.Dir = moduleRoot
 	if output, err := build.CombinedOutput(); err != nil {
 		return binary, fmt.Errorf("go build: %w: %s", err, output)

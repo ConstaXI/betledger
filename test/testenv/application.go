@@ -64,7 +64,7 @@ func StartApplication(
 	}
 	fxApp := fx.New(
 		fx.Supply(cfg),
-		app.Options(),
+		app.API(),
 		fx.Decorate(func(*slog.Logger) *slog.Logger { return slog.New(slog.DiscardHandler) }),
 		fx.NopLogger,
 	)

@@ -18,8 +18,8 @@ O projeto está em construção incremental. O que existe hoje:
 - **Autenticação e autorização** — Keycloak no Compose; os endpoints de negócio
   exigem um access token `client_credentials` com o papel adequado, e cada
   provedor só age em nome próprio.
-- **Aplicação em container** — `docker compose up --build` sobe tudo, com as
-  migrations aplicadas antes da aplicação.
+- **API e workers separados** — `docker compose up --build` sobe os dois, a
+  partir da mesma imagem, com as migrations aplicadas antes.
 - **Publicação de eventos** — um worker publica a outbox na fila FIFO
   `wallet-events.fifo`, no LocalStack, depois do commit, na ordem de cada carteira.
 - **Health checks** — liveness em `GET /health/live` e readiness, que checa o
@@ -49,10 +49,24 @@ O Compose sobe o PostgreSQL, o Keycloak e o LocalStack, com as filas criadas por
 [deploy/localstack/create-queues.sh](deploy/localstack/create-queues.sh), espera
 os três ficarem saudáveis,
 aplica as migrations num container de execução única (`migrate`) e só então
-inicia a aplicação em http://localhost:8080. A imagem é multi-stage e roda um
-binário estático sobre `distroless`, sem shell e como usuário sem privilégios.
+sobe a API em http://localhost:8080 e os workers. A imagem é multi-stage e roda
+binários estáticos sobre `distroless`, sem shell e como usuário sem privilégios.
 
-Para desenvolver, a aplicação pode rodar direto no host, contra os mesmos
+São duas aplicações a partir da mesma imagem, porque escalam por motivos
+diferentes:
+
+| Serviço | O que faz | Porta |
+| --- | --- | --- |
+| `api` | atende `POST /wallets`, `POST /wagering/transactions` e os health checks | 8080 |
+| `workers` | retoma referências pendentes e publica a outbox | nenhuma |
+
+Vários workers podem rodar ao mesmo tempo, cada um tomando parte do trabalho:
+
+```sh
+docker compose up -d --scale workers=3
+```
+
+Para desenvolver, as aplicações podem rodar direto no host, contra os mesmos
 containers:
 
 ```sh
@@ -61,15 +75,17 @@ make dev
 ```
 
 O `make dev` sobe o PostgreSQL, o Keycloak e o LocalStack, aguarda os três ficarem saudáveis,
-aplica as migrations e inicia a aplicação. Ela fica no ar até receber `SIGINT` ou `SIGTERM`, quando
-para de aceitar conexões, conclui as requisições em andamento e fecha o banco.
+aplica as migrations e inicia a API. Ela fica no ar até receber `SIGINT` ou
+`SIGTERM`, quando para de aceitar conexões, conclui as requisições em andamento e
+fecha o banco. Os workers sobem à parte, com `make workers`.
 
 Os passos também podem ser executados separadamente:
 
 ```sh
 make infra-up     # sobe o PostgreSQL, o Keycloak e o LocalStack
 make migrate-up   # aplica as migrations
-make run          # inicia a aplicação
+make run          # inicia a API
+make workers      # inicia os workers
 ```
 
 `make help` lista todos os alvos.
@@ -357,11 +373,12 @@ go test -tags=integration -run 'TestSchemaEnforcesFinancialInvariants' ./test/in
 ```
 api/                                 contrato HTTP em OpenAPI e página do Swagger UI
 Dockerfile                           imagem multi-stage com a aplicação e o binário de migrations
-cmd/betledger/                       entrypoint
+cmd/api/                             entrypoint da API HTTP
+cmd/workers/                         entrypoint dos workers em segundo plano
 cmd/migrate/                         aplicação e reversão das migrations
 deploy/keycloak/                     realm importado pelo Keycloak no Compose e nos testes
 deploy/localstack/                   provisionamento das filas no Compose e nos testes
-internal/app/                        composição da aplicação via Fx
+internal/app/                        composição das duas aplicações via Fx
 internal/domain/                     erros e identificadores compartilhados
 internal/domain/money/               valor monetário exato, sem ponto flutuante
 internal/domain/ledger/              lançamentos do ledger append-only

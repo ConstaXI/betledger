@@ -1,5 +1,5 @@
-// Package app composes the application with Fx. It is the composition root,
-// shared by the entrypoint and by the tests that start the real application.
+// Package app composes the applications with Fx. It is the composition root,
+// shared by the entrypoints and by the tests that start them for real.
 package app
 
 import (
@@ -20,9 +20,30 @@ import (
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
-// Options composes the application without its configuration, which the
-// entrypoint loads from the environment and tests supply directly.
-func Options() fx.Option {
+// API composes the HTTP application: the endpoints of wallets and wagering and
+// the health checks. It runs no background worker, so that serving requests and
+// draining work scale apart.
+func API() fx.Option {
+	return fx.Options(
+		shared(),
+		fx.Provide(
+			fx.Annotate(newSQSHealthCheck, fx.ResultTags(`group:"readiness"`)),
+			fx.Annotate(newPostgresHealthCheck, fx.ResultTags(`group:"readiness"`)),
+			fx.Annotate(auth.NewTokenVerifier, fx.As(new(httpserver.TokenVerifier))),
+		),
+		httpserver.Module,
+	)
+}
+
+// Workers composes the background application: the workers that retry the
+// operations waiting for a reference and publish the outbox. It serves no HTTP.
+func Workers() fx.Option {
+	return fx.Options(shared(), worker.Module)
+}
+
+// shared composes what both applications need, without the configuration, which
+// the entrypoints load from the environment and tests supply directly.
+func shared() fx.Option {
 	return fx.Options(
 		fx.WithLogger(func(logger *slog.Logger) fxevent.Logger {
 			return &fxevent.SlogLogger{Logger: logger}
@@ -38,13 +59,8 @@ func Options() fx.Option {
 			usecase.NewPublishOutbox,
 			messaging.NewClient,
 			fx.Annotate(messaging.NewEventPublisher, fx.As(fx.Self()), fx.As(new(usecase.EventPublisher))),
-			fx.Annotate(newSQSHealthCheck, fx.ResultTags(`group:"readiness"`)),
-			fx.Annotate(newPostgresHealthCheck, fx.ResultTags(`group:"readiness"`)),
-			fx.Annotate(auth.NewTokenVerifier, fx.As(new(httpserver.TokenVerifier))),
 		),
 		postgres.Module,
-		httpserver.Module,
-		worker.Module,
 	)
 }
 

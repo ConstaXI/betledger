@@ -1,4 +1,5 @@
-// Command betledger starts the application, composing its dependencies via Fx.
+// Command api serves the HTTP endpoints of betledger, composing its
+// dependencies via Fx.
 package main
 
 import (
@@ -9,5 +10,5 @@ import (
 )
 
 func main() {
-	fx.New(fx.Provide(config.Load), app.Options()).Run()
+	fx.New(fx.Provide(config.Load), app.API()).Run()
 }

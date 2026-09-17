@@ -10,7 +10,8 @@ spec é o critério de avaliação e tem itens eliminatórios.
 make check              # vet, testes com -race, gofmt e sqlc diff — rodar antes de dar algo por pronto
 make test-integration   # integração com testcontainers; exige Docker
 make generate           # regenera o sqlc após mudar migration ou query
-make dev                # sobe Postgres e Keycloak, migra e inicia a aplicação
+make dev                # sobe a infraestrutura, migra e inicia a API
+make workers            # inicia os workers em segundo plano
 make token              # imprime um access token (CLIENT=provider-a por padrão)
 ```
 
@@ -18,6 +19,11 @@ O `make` do usuário tem alias para `make -j24`; o Makefile declara
 `.NOTPARALLEL` para alvos encadeados não rodarem ao mesmo tempo. Não remova.
 
 Nunca edite `internal/infrastructure/postgres/sqlcgen` à mão: é gerado.
+
+São duas aplicações: `cmd/api` (HTTP) e `cmd/workers` (referências pendentes e
+publicação da outbox), compostas por `app.API()` e `app.Workers()`. O que as duas
+precisam fica no `shared()`, não exportado. Worker novo entra no `worker.Module`,
+nunca na API.
 
 Rotas registradas no grupo Fx `routes` exigem token; só `public_routes` e os
 health checks são públicos. Não registre rota de negócio como pública. Toda rota
@@ -101,7 +107,8 @@ avulso só quando o cenário realmente não cabe, e explique por quê.
 
 **Testes de integração** ficam em `test/integration`, e os arquivos de lá contêm
 **apenas testes** (mais o `TestMain`). Toda a infraestrutura — subir containers,
-iniciar a aplicação pelo `app.Options()`, chamadas HTTP, consultas ao banco — vive
+iniciar a API e os workers por `app.API()` e `app.Workers()`, chamadas HTTP,
+consultas ao banco — vive
 em `test/testenv`. Ambos ficam atrás da build tag `integration`; como o
 `goimports` não enxerga o `testenv` sem a tag, confira os imports à mão. Testes
 unitários continuam ao lado do código.

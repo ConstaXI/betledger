@@ -214,12 +214,12 @@ func TestApplicationResolvesPendingReferencesAfterRestart(t *testing.T) {
 
 	_, err := useCases.ProcessWager.Execute(context.Background(), testenv.BetInput(w, "bet", 2500))
 	require.NoError(t, err)
-	testenv.StartApplication(t, isolated.URL, identityProvider, broker, func(cfg *config.Config) {
+	testenv.StartWorkers(t, isolated.URL, broker, func(cfg *config.Config) {
 		cfg.ReferencePollInterval = 50 * time.Millisecond
 	})
 
 	assert.Eventually(t, func() bool { return isolated.Operation(t, w, "refund").State == "PROCESSED" },
-		10*time.Second, 100*time.Millisecond, "the worker of the restarted application must resolve the refund")
+		10*time.Second, 100*time.Millisecond, "the workers started afterwards must resolve the refund")
 	stored, _, _ := isolated.WalletState(t, w.ID())
 	assert.Equal(t, int64(10000), stored)
 	isolated.AssertLedgerReconciles(t, w.ID())

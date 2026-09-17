@@ -13,5 +13,19 @@ import (
 func TestDependencyGraphIsComplete(t *testing.T) {
 	t.Parallel()
 
-	assert.NoError(t, fx.ValidateApp(fx.Provide(config.Load), app.Options()))
+	tests := []struct {
+		name    string
+		options fx.Option
+	}{
+		{name: "should accept when the API is composed", options: app.API()},
+		{name: "should accept when the workers are composed", options: app.Workers()},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.NoError(t, fx.ValidateApp(fx.Provide(config.Load), test.options))
+		})
+	}
 }

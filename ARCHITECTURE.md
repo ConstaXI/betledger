@@ -275,7 +275,19 @@ encontra, reaproveita nem reenvia uma operação de outro.
 
 ## Composição e shutdown
 
-**Implementado.** A aplicação é composta com Uber Fx, e servidor e recursos são
+**Implementado.** São **duas aplicações** a partir do mesmo módulo: `cmd/api`
+serve o HTTP e `cmd/workers` roda a retomada de referências e a publicação da
+outbox. O `internal/app` expõe `API()` e `Workers()`, que compartilham por dentro
+a configuração, o banco, o SQS e os casos de uso.
+
+A separação existe porque as duas escalam por motivos diferentes: a API é curta e
+sensível a latência, os workers são longos e sensíveis a throughput e a disputa
+por locks. Assim dá para escalá-las em separado, e um deploy da API não
+interrompe uma rodada de trabalho no meio. Como toda a coordenação vive no banco,
+subir mais de um processo de workers é seguro. Os workers não expõem HTTP: sua
+saúde é o processo estar vivo, e uma dependência inacessível impede a subida.
+
+A aplicação é composta com Uber Fx, e servidor e recursos são
 gerenciados por `fx.Lifecycle`. A inicialização valida a configuração, consulta o
 banco e só então abre o listener, para que uma falha impeça a subida em vez de
 ocorrer em segundo plano. O encerramento segue a ordem inversa: o servidor para
