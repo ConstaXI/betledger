@@ -18,7 +18,7 @@ func TestApplicationStartsServesAndReleasesResources(t *testing.T) {
 	t.Parallel()
 
 	const applicationName = "betledger-lifecycle"
-	application := testenv.StartApplication(t, database.URLWithApplicationName(applicationName))
+	application := testenv.StartApplication(t, database.URLWithApplicationName(applicationName), identityProvider)
 	playerID := domain.NewID().String()
 
 	assert.Equal(t, http.StatusOK, application.Get(t, "/health/ready"))
@@ -38,11 +38,11 @@ func TestApplicationKeepsStateAcrossRestart(t *testing.T) {
 
 	playerID := domain.NewID().String()
 
-	first := testenv.StartApplication(t, database.URL)
+	first := testenv.StartApplication(t, database.URL, identityProvider)
 	assert.Equal(t, http.StatusCreated, first.OpenWallet(t, playerID))
 	first.Stop(t)
 
-	restarted := testenv.StartApplication(t, database.URL)
+	restarted := testenv.StartApplication(t, database.URL, identityProvider)
 
 	assert.Equal(t, http.StatusConflict, restarted.OpenWallet(t, playerID),
 		"the wallet opened before the restart must still exist")
@@ -52,7 +52,7 @@ func TestApplicationAnswersUnavailableWhileTheDatabaseIsDown(t *testing.T) {
 	t.Parallel()
 
 	isolated := testenv.MustStartPostgres(t)
-	application := testenv.StartApplication(t, isolated.URL)
+	application := testenv.StartApplication(t, isolated.URL, identityProvider)
 	require.Equal(t, http.StatusOK, application.Get(t, "/health/ready"))
 
 	isolated.Pause(t)

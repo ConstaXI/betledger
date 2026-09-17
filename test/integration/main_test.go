@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	database *testenv.Postgres
-	useCases testenv.UseCases
+	database         *testenv.Postgres
+	identityProvider *testenv.Keycloak
+	useCases         testenv.UseCases
 )
 
 func TestMain(m *testing.M) {
@@ -25,7 +26,15 @@ func TestMain(m *testing.M) {
 	database = started
 	useCases = database.NewUseCases()
 
+	identityProvider, err = testenv.StartKeycloak(context.Background())
+	if err != nil {
+		identityProvider.Terminate()
+		database.Terminate()
+		log.Fatalf("start keycloak: %v", err)
+	}
+
 	code := m.Run()
+	identityProvider.Terminate()
 	database.Terminate()
 	os.Exit(code)
 }

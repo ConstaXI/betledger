@@ -18,7 +18,7 @@ import (
 func TestWageringEndpointAnswersEveryOutcome(t *testing.T) {
 	t.Parallel()
 
-	application := testenv.StartApplication(t, database.URL)
+	application := testenv.StartApplication(t, database.URL, identityProvider)
 	w := useCases.MustOpenWallet(t, money.MustNew(10000, money.MustCurrency("BRL")))
 	unknownWallet := testenv.BetInput(w, "unknown-wallet", 1000)
 	unknownWallet.WalletID = domain.NewID()

@@ -10,13 +10,17 @@ spec é o critério de avaliação e tem itens eliminatórios.
 make check              # vet, testes com -race, gofmt e sqlc diff — rodar antes de dar algo por pronto
 make test-integration   # integração com testcontainers; exige Docker
 make generate           # regenera o sqlc após mudar migration ou query
-make dev                # sobe Postgres, migra e inicia a aplicação
+make dev                # sobe Postgres e Keycloak, migra e inicia a aplicação
+make token              # imprime um access token (CLIENT=provider-a por padrão)
 ```
 
 O `make` do usuário tem alias para `make -j24`; o Makefile declara
 `.NOTPARALLEL` para alvos encadeados não rodarem ao mesmo tempo. Não remova.
 
 Nunca edite `internal/infrastructure/postgres/sqlcgen` à mão: é gerado.
+
+Rotas registradas no grupo Fx `routes` exigem token; só `public_routes` e os
+health checks são públicos. Não registre rota de negócio como pública.
 
 O contrato HTTP vive em `api/openapi.yaml`, escrito à mão. Ao criar ou mudar um
 endpoint, um status ou um campo de resposta, atualize a spec **e** acrescente o

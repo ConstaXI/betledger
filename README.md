@@ -14,10 +14,12 @@ O projeto está em construção incremental. O que existe hoje:
   PostgreSQL com migrations e outbox transacional.
 - **Apostas `BET`, `WIN` e `LOSS`** — `POST /wagering/transactions`, com
   idempotência persistente e lock por carteira.
+- **Autenticação** — Keycloak no Compose; os endpoints de negócio exigem um
+  access token `client_credentials` válido.
 - **Health checks** — liveness em `GET /health/live` e readiness, que checa o
   banco, em `GET /health/ready`.
 
-Ainda **não** existem: autenticação, reversões (`REFUND`, `ROLLBACK`) e `WIN`
+Ainda **não** existem: autorização por papel e por provedor, reversões (`REFUND`, `ROLLBACK`) e `WIN`
 com referência, as rotas de leitura, SQS, o worker que publica a outbox e a
 aplicação em container. A seção
 [Próximos passos](#próximos-passos) lista a ordem prevista.
@@ -38,14 +40,14 @@ cp .env.example .env
 make dev
 ```
 
-O `make dev` sobe o PostgreSQL, aguarda ele ficar saudável, aplica as migrations
-e inicia a aplicação. Ela fica no ar até receber `SIGINT` ou `SIGTERM`, quando
+O `make dev` sobe o PostgreSQL e o Keycloak, aguarda os dois ficarem saudáveis,
+aplica as migrations e inicia a aplicação. Ela fica no ar até receber `SIGINT` ou `SIGTERM`, quando
 para de aceitar conexões, conclui as requisições em andamento e fecha o banco.
 
 Os passos também podem ser executados separadamente:
 
 ```sh
-make db-up        # sobe o PostgreSQL
+make infra-up     # sobe o PostgreSQL e o Keycloak
 make migrate-up   # aplica as migrations
 make run          # inicia a aplicação
 ```
@@ -58,10 +60,12 @@ make run          # inicia a aplicação
 | --- | --- | --- | --- |
 | `DATABASE_URL` | sim | — | Conexão com o PostgreSQL |
 | `HTTP_PORT` | não | `8080` | Porta do servidor HTTP |
+| `OIDC_ISSUER_URL` | sim | — | Emissor dos tokens; a descoberta OIDC fornece as chaves de assinatura |
+| `OIDC_AUDIENCE` | não | `betledger-api` | Audiência exigida no claim `aud` |
 
 A configuração é validada na inicialização, e o banco é consultado antes de o
-servidor abrir a porta: sem `DATABASE_URL` ou com o banco inacessível, a
-aplicação não sobe. O [.env.example](.env.example) tem valores locais que
+servidor abrir a porta: sem `DATABASE_URL` ou `OIDC_ISSUER_URL`, com o banco
+inacessível ou com o Keycloak inacessível, a aplicação não sobe. O [.env.example](.env.example) tem valores locais que
 funcionam com o Compose; o Makefile lê o `.env` se ele existir.
 
 ## Migrations
@@ -94,10 +98,34 @@ ar, e a especificação OpenAPI em
 valida as respostas reais dos handlers contra ela e quebra se um status, campo ou
 formato não estiver documentado.
 
+### Autenticação
+
+Health checks e documentação são públicos; todo o resto exige
+`Authorization: Bearer <token>`. Os tokens vêm do Keycloak pelo grant
+`client_credentials`, e o realm importado no Compose
+([deploy/keycloak/betledger-realm.json](deploy/keycloak/betledger-realm.json))
+tem três clients:
+
+| Client | Papel previsto | Secret (só para desenvolvimento) |
+| --- | --- | --- |
+| `wallet-service` | serviço interno, gerencia carteiras | `wallet-service-secret` |
+| `provider-a` | provedor de jogos | `provider-a-secret` |
+| `provider-b` | provedor de jogos | `provider-b-secret` |
+
+```sh
+TOKEN=$(make -s token CLIENT=wallet-service)
+```
+
+Por enquanto qualquer token válido do realm acessa qualquer endpoint; a
+restrição por papel e por provedor é o próximo passo. Sem token, ou com token
+inválido, expirado ou de outra audiência, a resposta é `401 UNAUTHENTICATED`.
+O console do Keycloak fica em http://localhost:8081, com `admin`/`admin`.
+
 ### Abrir carteira
 
 ```sh
 curl -i -X POST http://localhost:8080/wallets \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -H 'X-Correlation-Id: req-123' \
   -d '{
@@ -130,6 +158,7 @@ recusados, para que o valor nunca passe por ponto flutuante.
 
 ```sh
 curl -i -X POST http://localhost:8080/wagering/transactions \
+  -H "Authorization: Bearer $(make -s token CLIENT=provider-a)" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: provider-a:transaction-123' \
   -d '{
@@ -183,6 +212,7 @@ Erros seguem sempre o mesmo formato:
 | Status | Quando | Exemplos de `code` |
 | --- | --- | --- |
 | `400` | Entrada inválida; corrigir e reenviar | `INVALID_INPUT`, `INVALID_AMOUNT`, `TRANSACTION_KIND_NOT_ALLOWED` |
+| `401` | Token ausente, inválido ou expirado | `UNAUTHENTICATED` |
 | `404` | Recurso inexistente | `WALLET_NOT_FOUND` |
 | `409` | Conflito com estado já persistido | `WALLET_ALREADY_EXISTS`, `IDEMPOTENCY_CONFLICT` |
 | `422` | Recusa definitiva por regra de negócio | `INSUFFICIENT_FUNDS` |
@@ -204,9 +234,9 @@ e a infraestrutura que eles usam — containers, a aplicação em execução, ch
 HTTP e consultas ao banco — fica em [test/testenv](test/testenv).
 
 Eles ficam atrás da build tag `integration`, então `go test ./...` roda só os
-unitários e não exige Docker. Com a tag, o testcontainers sobe um PostgreSQL
-descartável por execução, sem estado compartilhado e sem precisar do
-`make db-up`. Cobrem dois níveis:
+unitários e não exige Docker. Com a tag, o testcontainers sobe um PostgreSQL e
+um Keycloak descartáveis por execução, com o mesmo realm do Compose, sem estado
+compartilhado e sem precisar do `make infra-up`. Cobrem dois níveis:
 
 - **Persistência**: migrations nos dois sentidos, atomicidade, idempotência, as
   constraints do banco — inclusive a imutabilidade do ledger e da outbox,
@@ -217,7 +247,8 @@ descartável por execução, sem estado compartilhado e sem precisar do
   ela sobe e serve, que no encerramento para de aceitar conexões e fecha o pool do
   banco, que o estado sobrevive a um reinício, e que com o banco travado o
   readiness falha e as escritas respondem `503` dentro do prazo, voltando ao normal
-  quando o banco retorna.
+  quando o banco retorna. A autenticação é testada com tokens reais: token
+válido, ausente, malformado, com assinatura de outro token e de outra audiência.
 
 Para rodar um teste específico:
 
@@ -232,6 +263,7 @@ go test -tags=integration -run 'TestSchemaEnforcesFinancialInvariants' ./test/in
 api/                                 contrato HTTP em OpenAPI e página do Swagger UI
 cmd/betledger/                       entrypoint
 cmd/migrate/                         aplicação e reversão das migrations
+deploy/keycloak/                     realm importado pelo Keycloak no Compose e nos testes
 internal/app/                        composição da aplicação via Fx
 internal/domain/                     erros e identificadores compartilhados
 internal/domain/money/               valor monetário exato, sem ponto flutuante
@@ -240,6 +272,7 @@ internal/domain/wager/               operações dos provedores e máquina de es
 internal/domain/wallet/              carteira, raiz do agregado financeiro
 internal/domain/event/               eventos de integração
 internal/usecase/                    casos de uso e as portas que eles consomem
+internal/infrastructure/auth/        validação dos access tokens do Keycloak
 internal/infrastructure/config/      carga e validação da configuração de ambiente
 internal/infrastructure/httpserver/  handlers, middleware e ciclo de vida do servidor
 internal/infrastructure/postgres/    repositórios, migrations e queries do sqlc
@@ -256,8 +289,8 @@ implementando as portas dos casos de uso.
 
 Na ordem prevista, seguindo [SPECS.md](SPECS.md):
 
-1. Autenticação com Keycloak e restrição das operações de carteira ao serviço
-   interno (seção 2).
+1. Autorização: operações de carteira restritas ao serviço interno e `providerId`
+   determinado pelo token (seção 2).
 2. Aplicação em container, para rodar tudo com `docker compose up --build`.
 3. Reversões e `WIN` com referência, com resolução de referências pendentes
    (seções 5 e 8).

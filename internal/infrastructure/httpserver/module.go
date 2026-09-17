@@ -28,28 +28,43 @@ type HealthCheck struct {
 	Check func(ctx context.Context) error
 }
 
-// Module provides the HTTP handler, the server and its lifecycle. Routes and
-// readiness checks are collected from the "routes" and "readiness" groups.
+// Module provides the HTTP handler, the server and its lifecycle. Routes are
+// collected from the "routes" group, which requires authentication, and the
+// "public_routes" group; readiness checks from the "readiness" group.
 var Module = fx.Module("httpserver",
 	fx.Provide(
-		fx.Annotate(NewHandler, fx.ParamTags(`group:"routes"`, `group:"readiness"`)),
+		fx.Annotate(NewHandler, fx.ParamTags(`group:"public_routes"`, `group:"routes"`, `group:"readiness"`)),
 		NewServer,
 		fx.Annotate(NewWalletHandler, fx.As(new(Route)), fx.ResultTags(`group:"routes"`)),
 		fx.Annotate(NewWageringHandler, fx.As(new(Route)), fx.ResultTags(`group:"routes"`)),
-		fx.Annotate(NewDocsHandler, fx.As(new(Route)), fx.ResultTags(`group:"routes"`)),
+		fx.Annotate(NewDocsHandler, fx.As(new(Route)), fx.ResultTags(`group:"public_routes"`)),
 	),
 	fx.Invoke(registerLifecycle),
 )
 
-// NewHandler builds the root handler with health endpoints, the registered
-// routes and the correlation middleware.
-func NewHandler(routes []Route, checks []HealthCheck, logger *slog.Logger) http.Handler {
+// NewHandler builds the root handler. Health endpoints and public routes are
+// served as they are; every other path, including unknown ones, requires a
+// valid bearer token, so a new route is protected unless it is explicitly
+// declared public.
+func NewHandler(
+	publicRoutes []Route,
+	routes []Route,
+	checks []HealthCheck,
+	verifier TokenVerifier,
+	logger *slog.Logger,
+) http.Handler {
+	protected := http.NewServeMux()
+	for _, route := range routes {
+		route.Register(protected)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", handleLive)
 	mux.Handle("GET /health/ready", readinessHandler(checks, logger))
-	for _, route := range routes {
+	for _, route := range publicRoutes {
 		route.Register(mux)
 	}
+	mux.Handle("/", requireAuthentication(verifier, protected))
 	return withCorrelationID(withRequestTimeout(mux))
 }
 

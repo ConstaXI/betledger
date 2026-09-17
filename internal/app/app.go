@@ -11,6 +11,7 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
 
+	"github.com/davibanfi/betledger/internal/infrastructure/auth"
 	"github.com/davibanfi/betledger/internal/infrastructure/httpserver"
 	"github.com/davibanfi/betledger/internal/infrastructure/postgres"
 	"github.com/davibanfi/betledger/internal/usecase"
@@ -29,6 +30,7 @@ func Options() fx.Option {
 			usecase.NewOpenWallet,
 			usecase.NewProcessWager,
 			fx.Annotate(newPostgresHealthCheck, fx.ResultTags(`group:"readiness"`)),
+			fx.Annotate(auth.NewTokenVerifier, fx.As(new(httpserver.TokenVerifier))),
 		),
 		postgres.Module,
 		httpserver.Module,

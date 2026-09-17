@@ -60,6 +60,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 		body           string
 		idempotencyKey string
 		wagerResult    usecase.WagerResult
+		verifierErr    error
 		useCaseErr     error
 		checks         []HealthCheck
 		wantStatus     int
@@ -171,6 +172,23 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			wantStatus:     http.StatusServiceUnavailable,
 		},
 		{
+			name:        "should match the contract when a wallet is opened without a valid token",
+			method:      http.MethodPost,
+			path:        "/wallets",
+			body:        validBody,
+			verifierErr: errRejectedToken,
+			wantStatus:  http.StatusUnauthorized,
+		},
+		{
+			name:           "should match the contract when an operation is sent without a valid token",
+			method:         http.MethodPost,
+			path:           "/wagering/transactions",
+			body:           validWagerBody,
+			idempotencyKey: "provider-a:transaction-123",
+			verifierErr:    errRejectedToken,
+			wantStatus:     http.StatusUnauthorized,
+		},
+		{
 			name:       "should match the contract when the process is alive",
 			method:     http.MethodGet,
 			path:       "/health/live",
@@ -199,16 +217,19 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			opener := &fakeWalletOpener{wallet: opened, err: test.useCaseErr}
 			processor := &fakeWagerProcessor{result: test.wagerResult, err: test.useCaseErr}
 			handler := NewHandler(
+				nil,
 				[]Route{
 					&WalletHandler{openWallet: opener, logger: slog.New(slog.DiscardHandler)},
 					&WageringHandler{processWager: processor, logger: slog.New(slog.DiscardHandler)},
 				},
 				test.checks,
+				fakeTokenVerifier{err: test.verifierErr},
 				slog.New(slog.DiscardHandler),
 			)
 			request := httptest.NewRequest(test.method, "http://localhost:8080"+test.path, strings.NewReader(test.body))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set(IdempotencyKeyHeader, test.idempotencyKey)
+			request.Header.Set("Authorization", "Bearer token")
 			recorder := httptest.NewRecorder()
 
 			handler.ServeHTTP(recorder, request)
@@ -260,7 +281,7 @@ func TestDocsHandler(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			handler := NewHandler([]Route{NewDocsHandler()}, nil, slog.New(slog.DiscardHandler))
+			handler := NewHandler([]Route{NewDocsHandler()}, nil, nil, fakeTokenVerifier{err: errRejectedToken}, slog.New(slog.DiscardHandler))
 			recorder := httptest.NewRecorder()
 
 			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))

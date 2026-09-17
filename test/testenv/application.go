@@ -26,18 +26,33 @@ import (
 // local port.
 type Application struct {
 	// BaseURL reaches the HTTP server, such as http://127.0.0.1:41234.
-	BaseURL string
-	fxApp   *fx.App
+	BaseURL          string
+	fxApp            *fx.App
+	identityProvider *Keycloak
 }
 
-// StartApplication starts the application against the database, stopping it on
-// cleanup. Logs are discarded.
-func StartApplication(t *testing.T, databaseURL string) *Application {
+// StartApplication starts the application against the database and the
+// identity provider, stopping it on cleanup. Options adjust the configuration
+// before start. Logs are discarded.
+func StartApplication(
+	t *testing.T,
+	databaseURL string,
+	identityProvider *Keycloak,
+	options ...func(cfg *config.Config),
+) *Application {
 	t.Helper()
 
-	port := freePort(t)
+	cfg := config.Config{
+		HTTPPort:      freePort(t),
+		DatabaseURL:   databaseURL,
+		OIDCIssuerURL: identityProvider.IssuerURL,
+		OIDCAudience:  Audience,
+	}
+	for _, option := range options {
+		option(&cfg)
+	}
 	fxApp := fx.New(
-		fx.Supply(config.Config{HTTPPort: port, DatabaseURL: databaseURL}),
+		fx.Supply(cfg),
 		app.Options(),
 		fx.Decorate(func(*slog.Logger) *slog.Logger { return slog.New(slog.DiscardHandler) }),
 		fx.NopLogger,
@@ -48,7 +63,11 @@ func StartApplication(t *testing.T, databaseURL string) *Application {
 	defer cancel()
 	require.NoError(t, fxApp.Start(ctx))
 
-	application := &Application{BaseURL: "http://127.0.0.1:" + port, fxApp: fxApp}
+	application := &Application{
+		BaseURL:          "http://127.0.0.1:" + cfg.HTTPPort,
+		fxApp:            fxApp,
+		identityProvider: identityProvider,
+	}
 	t.Cleanup(func() { _ = application.stop() })
 	return application
 }
@@ -86,12 +105,26 @@ func (a *Application) IsListening() bool {
 	return true
 }
 
-// OpenWallet returns the status of opening a 100.00 BRL wallet for the player.
+// OpenWallet returns the status of opening a 100.00 BRL wallet for the player,
+// authenticated as the internal wallet service.
 func (a *Application) OpenWallet(t *testing.T, playerID string) int {
 	t.Helper()
 
+	return a.OpenWalletAs(t, playerID, a.identityProvider.Bearer(t, "wallet-service"))
+}
+
+// OpenWalletAs returns the status of opening a 100.00 BRL wallet for the player
+// with the given Authorization header, which may be empty.
+func (a *Application) OpenWalletAs(t *testing.T, playerID, authorization string) int {
+	t.Helper()
+
 	body := fmt.Sprintf(`{"playerId":%q,"initialBalance":{"amount":"100.00","currency":"BRL"}}`, playerID)
-	response, err := httpClient().Post(a.BaseURL+"/wallets", "application/json", strings.NewReader(body))
+	request, err := http.NewRequest(http.MethodPost, a.BaseURL+"/wallets", strings.NewReader(body))
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", authorization)
+
+	response, err := httpClient().Do(request)
 	require.NoError(t, err)
 	defer response.Body.Close()
 	return response.StatusCode
@@ -113,8 +146,8 @@ type WagerResponse struct {
 	} `json:"error"`
 }
 
-// SendWager posts the operation to /wagering/transactions and returns the
-// status and the decoded body.
+// SendWager posts the operation to /wagering/transactions, authenticated as
+// provider-a, and returns the status and the decoded body.
 func (a *Application) SendWager(t *testing.T, input usecase.ProcessWagerInput) (int, WagerResponse) {
 	t.Helper()
 
@@ -134,6 +167,7 @@ func (a *Application) SendWager(t *testing.T, input usecase.ProcessWagerInput) (
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", input.IdempotencyKey)
+	request.Header.Set("Authorization", a.identityProvider.Bearer(t, "provider-a"))
 	request.Header.Set("X-Correlation-Id", input.CorrelationID)
 
 	response, err := httpClient().Do(request)

@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -62,4 +63,34 @@ func isValidCorrelationID(id string) bool {
 		}
 	}
 	return true
+}
+
+// TokenVerifier validates the bearer token of a request.
+type TokenVerifier interface {
+	Verify(ctx context.Context, rawToken string) error
+}
+
+// requireAuthentication answers 401 unless the request carries a bearer token
+// accepted by the verifier.
+func requireAuthentication(verifier TokenVerifier, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		scheme, token, found := strings.Cut(r.Header.Get("Authorization"), " ")
+		if !found || !strings.EqualFold(scheme, "Bearer") || token == "" {
+			writeUnauthenticated(w, "a bearer token is required")
+			return
+		}
+		if err := verifier.Verify(r.Context(), token); err != nil {
+			writeUnauthenticated(w, "the bearer token is invalid or expired")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func writeUnauthenticated(w http.ResponseWriter, message string) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="betledger"`)
+	_ = writeJSON(w, http.StatusUnauthorized, errorResponse{Error: errorDetail{
+		Code:    codeUnauthenticated,
+		Message: message,
+	}})
 }

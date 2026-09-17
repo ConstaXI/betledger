@@ -13,6 +13,7 @@ import (
 const (
 	maxRequestBodyBytes = 1 << 20
 
+	codeUnauthenticated    = "UNAUTHENTICATED"
 	codeServiceUnavailable = "SERVICE_UNAVAILABLE"
 	codeInternalError      = "INTERNAL_ERROR"
 )

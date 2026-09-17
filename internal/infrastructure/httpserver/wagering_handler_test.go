@@ -196,12 +196,15 @@ func TestProcessWagerHandler(t *testing.T) {
 
 			processor := &fakeWagerProcessor{result: test.result, err: test.processorErr}
 			handler := NewHandler(
+				nil,
 				[]Route{&WageringHandler{processWager: processor, logger: slog.New(slog.DiscardHandler)}},
 				nil,
+				fakeTokenVerifier{},
 				slog.New(slog.DiscardHandler),
 			)
 			request := httptest.NewRequest(http.MethodPost, "/wagering/transactions", strings.NewReader(test.body))
 			request.Header.Set(IdempotencyKeyHeader, test.idempotencyKey)
+			request.Header.Set("Authorization", "Bearer token")
 			recorder := httptest.NewRecorder()
 
 			handler.ServeHTTP(recorder, request)
@@ -228,14 +231,17 @@ func TestProcessWagerHandlerPassesTheRequestToTheUseCase(t *testing.T) {
 		Balance:       money.MustNew(10000, money.MustCurrency("BRL")),
 	}}
 	handler := NewHandler(
+		nil,
 		[]Route{&WageringHandler{processWager: processor, logger: slog.New(slog.DiscardHandler)}},
 		nil,
+		fakeTokenVerifier{},
 		slog.New(slog.DiscardHandler),
 	)
 	body := strings.Replace(validWagerBody, `"kind":"BET","money":{"amount":"25.00"`,
 		`"kind":"WIN","money":{"amount":"25.5"`, 1)
 	request := httptest.NewRequest(http.MethodPost, "/wagering/transactions", strings.NewReader(body))
 	request.Header.Set(IdempotencyKeyHeader, "custom-key")
+	request.Header.Set("Authorization", "Bearer token")
 	request.Header.Set(CorrelationHeader, "req-42")
 	recorder := httptest.NewRecorder()
 

@@ -138,13 +138,17 @@ func TestOpenWalletHandler(t *testing.T) {
 
 			opener := &fakeWalletOpener{wallet: opened, err: test.openerErr}
 			handler := NewHandler(
+				nil,
 				[]Route{&WalletHandler{openWallet: opener, logger: slog.New(slog.DiscardHandler)}},
 				nil,
+				fakeTokenVerifier{},
 				slog.New(slog.DiscardHandler),
 			)
+			request := httptest.NewRequest(http.MethodPost, "/wallets", strings.NewReader(test.body))
+			request.Header.Set("Authorization", "Bearer token")
 			recorder := httptest.NewRecorder()
 
-			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/wallets", strings.NewReader(test.body)))
+			handler.ServeHTTP(recorder, request)
 
 			var body openWalletResponseBody
 			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
@@ -165,13 +169,16 @@ func TestOpenWalletHandlerPassesCorrelationIDToTheUseCase(t *testing.T) {
 	require.NoError(t, err)
 	opener := &fakeWalletOpener{wallet: opened}
 	handler := NewHandler(
+		nil,
 		[]Route{&WalletHandler{openWallet: opener, logger: slog.New(slog.DiscardHandler)}},
 		nil,
+		fakeTokenVerifier{},
 		slog.New(slog.DiscardHandler),
 	)
 	request := httptest.NewRequest(http.MethodPost, "/wallets", strings.NewReader(
 		`{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"0.00","currency":"BRL"}}`))
 	request.Header.Set(CorrelationHeader, "req-42")
+	request.Header.Set("Authorization", "Bearer token")
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, request)

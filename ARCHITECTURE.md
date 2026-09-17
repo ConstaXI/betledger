@@ -129,6 +129,32 @@ depois de um crédito.
 por TTL, o que dispensa relógio no domínio. Esgotadas as tentativas, a operação
 termina como `REJECTED` com `REFERENCE_NOT_FOUND`.
 
+## Autenticação
+
+**Implementado em parte: autenticação sim, autorização ainda não.** O IdP é o
+Keycloak, recomendado pela spec, que roda no Compose e nos testes com o mesmo
+realm importado de um arquivo versionado. A comunicação é serviço a serviço, então
+cada provedor e o serviço interno de carteiras são clients confidenciais com
+`client_credentials`, sem usuários nem senhas.
+
+A aplicação valida o JWT localmente, sem consultar o Keycloak a cada requisição:
+assinatura com as chaves publicadas no JWKS, emissor, expiração e audiência. As
+chaves ficam em cache e são buscadas de novo quando aparece um `kid`
+desconhecido, o que cobre a rotação. A audiência `betledger-api` é adicionada aos
+tokens por um client scope do realm; sem essa checagem, qualquer token emitido
+pelo realm para outra aplicação seria aceito. A validação usa `go-oidc`, que
+implementa a descoberta OIDC e a verificação de JWKS, em vez de código próprio de
+criptografia.
+
+As rotas são **protegidas por padrão**: o roteador só atende sem token os health
+checks e a documentação, declarados explicitamente como públicos; qualquer outro
+caminho, inclusive inexistente, passa pela autenticação. Uma rota nova esquecida
+fica fechada, não aberta.
+
+O Keycloak é descoberto na subida, e a aplicação não sobe se ele estiver
+inacessível. Depois disso, a indisponibilidade dele não afeta as requisições
+enquanto as chaves em cache forem válidas. Ele não entra no readiness por isso.
+
 ## Composição e shutdown
 
 **Implementado.** A aplicação é composta com Uber Fx, e servidor e recursos são
@@ -170,7 +196,8 @@ resposta é `503`, que o cliente pode repetir com segurança graças à idempot�
 
 ## Trabalho não concluído
 
-- **Autenticação e autorização** com Keycloak e isolamento por provedor.
+- **Autorização** por papel e isolamento por provedor, com o `providerId`
+  determinado pelo token.
 - **Reversões** contra o estado persistido, incluindo a política que impede
   `REFUND` e `ROLLBACK` sobre o mesmo débito.
 - **Publicação da outbox** e **inbox**, com SQS em filas FIFO e DLQ.

@@ -13,11 +13,18 @@ info:
     when it has 1 to 128 characters among letters, digits, `-`, `_` and `.`;
     otherwise a new one is generated.
 
-    Authentication is not enforced yet.
+    Business endpoints require an OAuth 2.0 access token issued by the identity
+    provider through the `client_credentials` grant, sent as
+    `Authorization: Bearer <token>`. The token must be signed by the provider,
+    unexpired, and carry the `betledger-api` audience. Health endpoints are
+    public.
 
 servers:
   - url: http://localhost:8080
     description: Local development
+
+security:
+  - bearerAuth: []
 
 tags:
   - name: Wallets
@@ -68,6 +75,8 @@ paths:
                 $ref: '#/components/schemas/Wallet'
         '400':
           $ref: '#/components/responses/InvalidInput'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
         '409':
           description: The player already holds a wallet in this currency.
           headers:
@@ -168,6 +177,8 @@ paths:
                 idempotentReplay: true
         '400':
           $ref: '#/components/responses/InvalidInput'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
         '404':
           description: The wallet does not exist.
           headers:
@@ -222,6 +233,7 @@ paths:
     get:
       tags: [Health]
       operationId: liveness
+      security: []
       summary: Liveness probe
       description: Reports that the process is running. It does not check dependencies.
       responses:
@@ -238,6 +250,7 @@ paths:
     get:
       tags: [Health]
       operationId: readiness
+      security: []
       summary: Readiness probe
       description: |
         Reports whether the service can take traffic, checking every dependency.
@@ -262,6 +275,21 @@ paths:
                 failing: [postgres]
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Access token obtained from the identity provider with the
+        `client_credentials` grant. Locally:
+
+        ```sh
+        curl -s http://localhost:8081/realms/betledger/protocol/openid-connect/token \
+          -d grant_type=client_credentials \
+          -d client_id=provider-a -d client_secret=provider-a-secret
+        ```
+
   parameters:
     CorrelationId:
       name: X-Correlation-Id
@@ -315,6 +343,23 @@ components:
                 error:
                   code: INVALID_INPUT
                   message: 'malformed request body: unexpected EOF'
+    Unauthenticated:
+      description: The bearer token is missing, invalid, expired or issued for another audience.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            example: Bearer realm="betledger"
+        X-Correlation-Id:
+          $ref: '#/components/headers/CorrelationId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: UNAUTHENTICATED
+              message: a bearer token is required
     ServiceUnavailable:
       description: A dependency is temporarily unavailable. The request can be retried.
       headers:
@@ -476,7 +521,8 @@ components:
                 Stable failure code, part of the contract. Codes returned so far:
                 `INVALID_INPUT`, `INVALID_AMOUNT`, `AMOUNT_OVERFLOW`,
                 `TRANSACTION_KIND_NOT_ALLOWED`, `WALLET_ALREADY_EXISTS`,
-                `WALLET_NOT_FOUND`, `IDEMPOTENCY_CONFLICT`, `SERVICE_UNAVAILABLE`,
+                `WALLET_NOT_FOUND`, `IDEMPOTENCY_CONFLICT`, `UNAUTHENTICATED`,
+                `SERVICE_UNAVAILABLE`,
                 `INTERNAL_ERROR`.
             message:
               type: string
