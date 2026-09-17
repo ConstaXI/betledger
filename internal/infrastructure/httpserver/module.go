@@ -49,7 +49,7 @@ func NewHandler(routes []Route, checks []HealthCheck, logger *slog.Logger) http.
 	for _, route := range routes {
 		route.Register(mux)
 	}
-	return withCorrelationID(mux)
+	return withCorrelationID(withRequestTimeout(mux))
 }
 
 // NewServer builds the HTTP server. The timeouts bound how long a slow client

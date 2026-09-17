@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -10,7 +11,24 @@ import (
 // CorrelationHeader carries the correlation identifier of a request.
 const CorrelationHeader = "X-Correlation-Id"
 
-const maxCorrelationIDLength = 128
+const (
+	maxCorrelationIDLength = 128
+	// requestTimeout stays below the server WriteTimeout, so that a request
+	// waiting on an unresponsive dependency is answered with 503 before the
+	// connection is cut.
+	requestTimeout = 5 * time.Second
+)
+
+// withRequestTimeout bounds the work of each request. When a dependency stops
+// answering, the expired context aborts the pending call and the request is
+// answered as a transient unavailability instead of hanging.
+func withRequestTimeout(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
 
 type correlationKey struct{}
 
