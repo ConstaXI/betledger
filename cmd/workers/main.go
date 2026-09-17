@@ -1,7 +1,8 @@
 // Command workers runs the background workers of betledger: the retry of
 // operations waiting for a reference and the publication of the outbox. It
-// composes its own dependencies with Fx, serves no HTTP, and several instances
-// may run at once, because all coordination lives in the database.
+// composes its own dependencies with Fx and serves only health endpoints, and
+// several instances may run at once, because all coordination lives in the
+// database.
 package main
 
 import (
@@ -9,10 +10,12 @@ import (
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
 
 	"github.com/davibanfi/betledger/internal/infrastructure/config"
+	"github.com/davibanfi/betledger/internal/infrastructure/httpserver"
 	"github.com/davibanfi/betledger/internal/infrastructure/messaging"
 	"github.com/davibanfi/betledger/internal/infrastructure/postgres"
 	"github.com/davibanfi/betledger/internal/infrastructure/worker"
@@ -44,9 +47,12 @@ func options() fx.Option {
 			newPublicationPolicy,
 			usecase.NewPublishOutbox,
 			messaging.NewClient,
-			fx.Annotate(messaging.NewEventPublisher, fx.As(new(usecase.EventPublisher))),
+			fx.Annotate(messaging.NewEventPublisher, fx.As(fx.Self()), fx.As(new(usecase.EventPublisher))),
+			fx.Annotate(newPostgresHealthCheck, fx.ResultTags(`group:"readiness"`)),
+			fx.Annotate(newSQSHealthCheck, fx.ResultTags(`group:"readiness"`)),
 		),
 		postgres.Module,
+		httpserver.HealthModule,
 		worker.Module,
 	)
 }
@@ -57,6 +63,14 @@ func newLogger() *slog.Logger {
 
 func newClock() usecase.Clock {
 	return time.Now
+}
+
+func newPostgresHealthCheck(pool *pgxpool.Pool) httpserver.HealthCheck {
+	return httpserver.HealthCheck{Name: "postgres", Check: pool.Ping}
+}
+
+func newSQSHealthCheck(publisher *messaging.EventPublisher) httpserver.HealthCheck {
+	return httpserver.HealthCheck{Name: "sqs", Check: publisher.Check}
 }
 
 func newReferenceRetryPolicy(cfg config.Config) usecase.ReferenceRetryPolicy {

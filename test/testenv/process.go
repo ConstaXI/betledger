@@ -115,8 +115,11 @@ func (a *Application) IsListening() bool {
 	return response.StatusCode == http.StatusOK
 }
 
-// Workers is the background application running as its own process.
+// Workers is the background application running as its own process. It serves
+// only the health endpoints.
 type Workers struct {
+	// BaseURL reaches the health endpoints, such as http://127.0.0.1:41234.
+	BaseURL string
 	process *process
 }
 
@@ -131,11 +134,29 @@ func (b *Binary) StartWorkers(
 ) *Workers {
 	t.Helper()
 
+	port := freePort(t)
 	env := defaultEnv(databaseURL, nil, broker)
+	env["HTTP_PORT"] = port
 	for _, option := range options {
 		option(env)
 	}
-	return &Workers{process: start(t, b.Workers, env)}
+	workers := &Workers{BaseURL: "http://127.0.0.1:" + port, process: start(t, b.Workers, env)}
+	require.Eventually(t, func() bool { return workers.Ready(t) == http.StatusOK },
+		30*time.Second, 100*time.Millisecond, "the workers on %s never became ready:\n%s",
+		workers.BaseURL, workers.process.output)
+	return workers
+}
+
+// Ready returns the status of the readiness probe of the workers.
+func (w *Workers) Ready(t *testing.T) int {
+	t.Helper()
+
+	response, err := httpClient().Get(w.BaseURL + "/health/ready")
+	if err != nil {
+		return 0
+	}
+	defer response.Body.Close()
+	return response.StatusCode
 }
 
 // Stop sends SIGTERM and waits for the process, as an orchestrator would.

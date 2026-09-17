@@ -161,3 +161,22 @@ func TestWorkersPublishEventsCommittedByTheAPI(t *testing.T) {
 	assert.Equal(t, isolated.OutboxEvents(t).IDs(), received.IDs())
 	assert.Equal(t, http.StatusOK, application.Get(t, "/health/ready"))
 }
+
+func TestWorkersReportTheirDependencies(t *testing.T) {
+	t.Parallel()
+
+	isolated := testenv.MustStartPostgres(t)
+	workers := binary.StartWorkers(t, isolated.URL, broker)
+
+	assert.Equal(t, http.StatusOK, workers.Ready(t), "workers must report ready with the database and the broker up")
+
+	isolated.Pause(t)
+
+	assert.Eventually(t, func() bool { return workers.Ready(t) == http.StatusServiceUnavailable },
+		15*time.Second, 200*time.Millisecond, "readiness must fail while the database does not answer")
+
+	isolated.Unpause(t)
+
+	assert.Eventually(t, func() bool { return workers.Ready(t) == http.StatusOK },
+		15*time.Second, 200*time.Millisecond, "readiness must recover once the database is back")
+}

@@ -104,11 +104,10 @@ enxerga linhas já confirmadas.
   eventos de uma carteira em ordem e carteiras diferentes em paralelo. O corpo da
   mensagem é o snapshot gravado, byte a byte.
 - **A API não toca no broker.** Ela grava na outbox, dentro do mesmo commit, e só
-  os workers publicam. Por isso o readiness da API checa apenas o PostgreSQL, e
-  não o SQS como a seção 9 da spec sugere: com o broker fora do ar a API continua
-  aceitando operações, que ficam na outbox até o broker voltar — exatamente o que
-  o padrão promete. O SQS volta ao readiness quando existir o consumidor, que é
-  quem depende dele de verdade.
+  os workers publicam. Por isso o readiness da API checa apenas o PostgreSQL:
+  com o broker fora do ar ela continua aceitando operações, que ficam na outbox
+  até o broker voltar — exatamente o que o padrão promete. A checagem do SQS que
+  a seção 9 da spec pede vive no readiness dos workers, que são quem publica.
 
 Os testes com LocalStack real cobrem a interrupção entre o commit e a publicação,
 a interrupção entre a publicação e a confirmação — a fila recebe cada evento uma
@@ -293,8 +292,9 @@ A separação existe porque as duas escalam por motivos diferentes: a API é cur
 sensível a latência, os workers são longos e sensíveis a throughput e a disputa
 por locks. Assim dá para escalá-las em separado, e um deploy da API não
 interrompe uma rodada de trabalho no meio. Como toda a coordenação vive no banco,
-subir mais de um processo de workers é seguro. Os workers não expõem HTTP: sua
-saúde é o processo estar vivo, e uma dependência inacessível impede a subida.
+subir mais de um processo de workers é seguro. Os workers expõem só os health checks, sem rota de negócio nem autenticação: o
+readiness deles checa o PostgreSQL e o SQS, que são as dependências que usam de
+verdade.
 
 As duas são compostas com Uber Fx, e servidor, workers e recursos são
 gerenciados por `fx.Lifecycle`. Cada entrypoint tem um teste que valida seu grafo

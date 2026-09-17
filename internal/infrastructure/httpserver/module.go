@@ -42,6 +42,26 @@ var Module = fx.Module("httpserver",
 	fx.Invoke(registerLifecycle),
 )
 
+// HealthModule provides a server that serves only the health endpoints, for an
+// application without business routes, such as the workers. Readiness checks
+// come from the "readiness" group.
+var HealthModule = fx.Module("healthserver",
+	fx.Provide(
+		fx.Annotate(NewHealthHandler, fx.ParamTags(`group:"readiness"`)),
+		NewServer,
+	),
+	fx.Invoke(registerLifecycle),
+)
+
+// NewHealthHandler builds a handler serving only liveness and readiness. Any
+// other path answers 404, because there is nothing else to serve.
+func NewHealthHandler(checks []HealthCheck, logger *slog.Logger) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health/live", handleLive)
+	mux.Handle("GET /health/ready", readinessHandler(checks, logger))
+	return withCorrelationID(withRequestTimeout(mux))
+}
+
 // NewHandler builds the root handler. Health endpoints and public routes are
 // served as they are; every other path, including unknown ones, requires a
 // valid bearer token, so a new route is protected unless it is explicitly
