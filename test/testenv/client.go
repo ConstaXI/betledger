@@ -35,6 +35,26 @@ func (c *Client) Get(t *testing.T, path string) int {
 	return response.StatusCode
 }
 
+// Scrape returns the body of the metrics endpoint, which needs no token,
+// because a scraper carries none.
+func (c *Client) Scrape(t *testing.T) string {
+	t.Helper()
+
+	return scrape(t, c.BaseURL)
+}
+
+func scrape(t *testing.T, baseURL string) string {
+	t.Helper()
+
+	response, err := httpClient().Get(baseURL + "/metrics")
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	return string(body)
+}
+
 // IsListening reports whether the server still accepts connections.
 func (c *Client) IsListening() bool {
 	response, err := (&http.Client{Timeout: time.Second}).Get(c.BaseURL + "/health/live")

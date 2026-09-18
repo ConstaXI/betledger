@@ -160,9 +160,11 @@ func TestWagerConsumerExecute(t *testing.T) {
 				}},
 			}
 			processor := &fakeProcessor{result: applied, err: test.processErr}
+			metrics := &fakeDeadLetterRecorder{}
 			consumer := &WagerConsumer{
 				client:            queue,
 				processMessage:    processor,
+				metrics:           metrics,
 				logger:            slog.New(slog.DiscardHandler),
 				queueURL:          "http://queues/wager-transactions.fifo",
 				deadLetterURL:     "http://queues/wager-transactions-dlq.fifo",
@@ -177,6 +179,7 @@ func TestWagerConsumerExecute(t *testing.T) {
 			assert.Equal(t, test.wantProcessed, processor.received)
 			assert.Len(t, queue.deleted, test.wantDeleted)
 			assert.Len(t, queue.sent, test.wantDeadLetters)
+			assert.Equal(t, test.wantDeadLetters, metrics.calls)
 		})
 	}
 }

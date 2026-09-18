@@ -43,11 +43,17 @@ type ReadWallet struct {
 	transactor Transactor
 	wallets    WalletRepository
 	ledger     LedgerRepository
+	metrics    Metrics
 }
 
 // NewReadWallet builds the use case.
-func NewReadWallet(transactor Transactor, wallets WalletRepository, ledger LedgerRepository) *ReadWallet {
-	return &ReadWallet{transactor: transactor, wallets: wallets, ledger: ledger}
+func NewReadWallet(
+	transactor Transactor,
+	wallets WalletRepository,
+	ledger LedgerRepository,
+	metrics Metrics,
+) *ReadWallet {
+	return &ReadWallet{transactor: transactor, wallets: wallets, ledger: ledger, metrics: metrics}
 }
 
 // Wallet returns the wallet.
@@ -129,5 +135,7 @@ func (uc *ReadWallet) Reconcile(ctx context.Context, walletID domain.ID) (Reconc
 	if err != nil {
 		return ReconciliationResult{}, err
 	}
+
+	uc.metrics.ReconciliationChecked(ctx, result.Consistent)
 	return result, nil
 }

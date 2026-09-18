@@ -55,7 +55,7 @@ WHERE id IN (
     LIMIT $3::int
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, aggregate_id, event_type, payload, attempts
+RETURNING id, aggregate_id, event_type, payload, occurred_at, attempts
 `
 
 type LeasePendingOutboxEventsParams struct {
@@ -69,6 +69,7 @@ type LeasePendingOutboxEventsRow struct {
 	AggregateID uuid.UUID
 	EventType   string
 	Payload     []byte
+	OccurredAt  time.Time
 	Attempts    int32
 }
 
@@ -86,6 +87,7 @@ func (q *Queries) LeasePendingOutboxEvents(ctx context.Context, arg LeasePending
 			&i.AggregateID,
 			&i.EventType,
 			&i.Payload,
+			&i.OccurredAt,
 			&i.Attempts,
 		); err != nil {
 			return nil, err

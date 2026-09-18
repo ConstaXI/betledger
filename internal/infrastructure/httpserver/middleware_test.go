@@ -1,19 +1,23 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/davibanfi/betledger/internal/infrastructure/auth"
+	"github.com/davibanfi/betledger/internal/infrastructure/logging"
 )
 
 func TestWithCorrelationID(t *testing.T) {
@@ -38,7 +42,7 @@ func TestWithCorrelationID(t *testing.T) {
 
 			var seen string
 			handler := withCorrelationID(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-				seen = correlationID(r.Context())
+				seen = logging.CorrelationID(r.Context())
 			}))
 			request := httptest.NewRequest(http.MethodGet, "/", nil)
 			request.Header[CorrelationHeader] = []string{test.header}
@@ -52,6 +56,128 @@ func TestWithCorrelationID(t *testing.T) {
 			assert.Equal(t, seen, recorder.Header().Get(CorrelationHeader))
 		})
 	}
+}
+
+func TestWithRequestObservation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		// correlationID is the one the context carries, as the correlation
+		// middleware leaves it.
+		correlationID string
+		// handlerStatus is the status the route writes, or zero when it writes
+		// the body without setting one.
+		handlerStatus int
+		wantStatus    int
+		wantRecord    map[string]any
+		wantMetrics   []string
+	}{
+		{
+			name:          "should report when a request is handled",
+			method:        http.MethodPost,
+			path:          "/wallets",
+			correlationID: "req-1",
+			handlerStatus: http.StatusCreated,
+			wantStatus:    http.StatusCreated,
+			wantRecord: map[string]any{
+				"level": "INFO", "msg": "request handled", "method": http.MethodPost, "path": "/wallets",
+				"status": float64(http.StatusCreated), "correlationId": "req-1",
+			},
+			wantMetrics: []string{`POST "POST /wallets" 201`},
+		},
+		{
+			name:       "should report the route of a protected path when it carries an identifier",
+			method:     http.MethodGet,
+			path:       "/wallets/0192f291-27dd-7d3f-8071-5f8685deef37",
+			wantStatus: http.StatusOK,
+			wantRecord: map[string]any{
+				"level": "INFO", "msg": "request handled", "method": http.MethodGet,
+				"path": "/wallets/0192f291-27dd-7d3f-8071-5f8685deef37", "status": float64(http.StatusOK),
+			},
+			wantMetrics: []string{`GET "GET /wallets/{walletId}" 200`},
+		},
+		{
+			name:       "should report no route when the path matches none",
+			method:     http.MethodGet,
+			path:       "/unknown",
+			wantStatus: http.StatusNotFound,
+			wantRecord: map[string]any{
+				"level": "INFO", "msg": "request handled", "method": http.MethodGet,
+				"path": "/unknown", "status": float64(http.StatusNotFound),
+			},
+			wantMetrics: []string{`GET "" 404`},
+		},
+		{
+			name:          "should report nothing when liveness is probed",
+			method:        http.MethodGet,
+			path:          "/health/live",
+			handlerStatus: http.StatusOK,
+			wantStatus:    http.StatusOK,
+			wantRecord:    map[string]any{},
+		},
+		{
+			name:          "should report nothing when the metrics are scraped",
+			method:        http.MethodGet,
+			path:          "/metrics",
+			handlerStatus: http.StatusOK,
+			wantStatus:    http.StatusOK,
+			wantRecord:    map[string]any{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			route := func(w http.ResponseWriter, _ *http.Request) {
+				if test.handlerStatus > 0 {
+					w.WriteHeader(test.handlerStatus)
+				}
+				_, _ = w.Write([]byte("ok"))
+			}
+			protected := http.NewServeMux()
+			protected.HandleFunc("GET /wallets/{walletId}", route)
+			mux := http.NewServeMux()
+			mux.HandleFunc("POST /wallets", route)
+			mux.HandleFunc("GET /health/live", route)
+			mux.HandleFunc("GET /metrics", route)
+			mux.Handle("/", requireAuthentication(fakeTokenVerifier{principal: walletOperator}, protected))
+
+			var buffer bytes.Buffer
+			metrics := &fakeRequestRecorder{}
+			handler := withRequestObservation(logging.New(&buffer), metrics, mux)
+			request := httptest.NewRequest(test.method, test.path, nil)
+			request.Header.Set("Authorization", "Bearer token")
+			request = request.WithContext(logging.WithCorrelationID(request.Context(), test.correlationID))
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, request)
+
+			record := map[string]any{}
+			_ = json.Unmarshal(buffer.Bytes(), &record)
+			delete(record, slog.TimeKey)
+			delete(record, "durationMs")
+			assert.Equal(t, test.wantRecord, record)
+			assert.Equal(t, test.wantStatus, recorder.Code)
+			assert.Equal(t, test.wantMetrics, metrics.calls)
+		})
+	}
+}
+
+// fakeRequestRecorder keeps the requests it was told about, as the method, the
+// route that matched and the status.
+type fakeRequestRecorder struct{ calls []string }
+
+func (f *fakeRequestRecorder) RequestHandled(
+	_ context.Context,
+	method, route string,
+	status int,
+	_ time.Duration,
+) {
+	f.calls = append(f.calls, fmt.Sprintf("%s %q %d", method, route, status))
 }
 
 var errRejectedToken = errors.New("fake: token rejected")
@@ -183,6 +309,7 @@ func TestRequireAuthentication(t *testing.T) {
 				[]Route{probeRoute{calls: &calls}},
 				nil,
 				fakeTokenVerifier{err: test.verifierErr},
+				&fakeRequestRecorder{},
 				slog.New(slog.DiscardHandler),
 			)
 			request := httptest.NewRequest(http.MethodGet, test.path, nil)

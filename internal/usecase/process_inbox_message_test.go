@@ -35,6 +35,7 @@ func TestProcessInboxMessageExecute(t *testing.T) {
 		wantTransactions  int
 		wantMessages      int
 		wantEventTypes    []event.Type
+		wantMetrics       []string
 	}{
 		{
 			name:              "should accept when the message arrives for the first time",
@@ -44,6 +45,7 @@ func TestProcessInboxMessageExecute(t *testing.T) {
 			wantTransactions:  1,
 			wantMessages:      1,
 			wantEventTypes:    processed,
+			wantMetrics:       []string{"wager BET PROCESSED false", "message false"},
 		},
 		{
 			name:              "should report a duplicate when the same message is delivered again",
@@ -54,6 +56,7 @@ func TestProcessInboxMessageExecute(t *testing.T) {
 			wantTransactions:  1,
 			wantMessages:      1,
 			wantEventTypes:    processed,
+			wantMetrics:       []string{"wager BET PROCESSED false", "message false", "message true"},
 		},
 		{
 			name:    "should return IDEMPOTENCY_CONFLICT when the message id carries another payload",
@@ -68,6 +71,7 @@ func TestProcessInboxMessageExecute(t *testing.T) {
 			wantTransactions:  1,
 			wantMessages:      1,
 			wantEventTypes:    processed,
+			wantMetrics:       []string{"wager BET PROCESSED false", "message false"},
 		},
 		{
 			name:    "should accept when another message carries the operation already applied",
@@ -81,6 +85,9 @@ func TestProcessInboxMessageExecute(t *testing.T) {
 			wantTransactions:  1,
 			wantMessages:      2,
 			wantEventTypes:    processed,
+			wantMetrics: []string{
+				"wager BET PROCESSED false", "message false", "wager BET PROCESSED true", "message false",
+			},
 		},
 		{
 			name:              "should return INSUFFICIENT_FUNDS when the operation is refused, taking the message in",
@@ -91,6 +98,7 @@ func TestProcessInboxMessageExecute(t *testing.T) {
 			wantTransactions:  1,
 			wantMessages:      1,
 			wantEventTypes:    []event.Type{event.TypeWagerTransactionRejected},
+			wantMetrics:       []string{"wager BET REJECTED false", "message false"},
 		},
 		{
 			name:              "should return INVALID_INPUT when the message has no identifier",
@@ -115,9 +123,10 @@ func TestProcessInboxMessageExecute(t *testing.T) {
 			w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(10000, brl))
 			require.NoError(t, err)
 			transactor := newFakeTransactor(w)
+			metrics := &fakeMetrics{}
 			processWager := usecase.NewProcessWager(transactor, fakeWallets{}, fakeTransactions{}, fakeLedger{},
-				fakeOutbox{}, func() time.Time { return fixedNow })
-			uc := usecase.NewProcessInboxMessage(transactor, fakeInbox{}, processWager)
+				fakeOutbox{}, func() time.Time { return fixedNow }, metrics)
+			uc := usecase.NewProcessInboxMessage(transactor, fakeInbox{}, processWager, metrics)
 			base := usecase.InboundMessage{
 				MessageID: "msg-1",
 				Input: usecase.ProcessWagerInput{
@@ -152,6 +161,7 @@ func TestProcessInboxMessageExecute(t *testing.T) {
 			assert.Len(t, transactor.committed.transactions, test.wantTransactions)
 			assert.Len(t, transactor.committed.inbox, test.wantMessages)
 			assert.Equal(t, test.wantEventTypes, transactor.committed.eventTypes)
+			assert.Equal(t, test.wantMetrics, metrics.calls)
 		})
 	}
 }

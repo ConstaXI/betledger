@@ -43,7 +43,8 @@ func TestReadinessHandler(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			handler := NewHandler(nil, nil, test.checks, fakeTokenVerifier{err: errRejectedToken}, slog.New(slog.DiscardHandler))
+			handler := NewHandler(nil, nil, test.checks, fakeTokenVerifier{err: errRejectedToken},
+				&fakeRequestRecorder{}, slog.New(slog.DiscardHandler))
 			recorder := httptest.NewRecorder()
 
 			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
@@ -101,7 +102,8 @@ func TestHealthHandler(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			handler := NewHealthHandler(test.checks, slog.New(slog.DiscardHandler))
+			handler := NewHealthHandler(test.checks, nil, &fakeRequestRecorder{},
+				slog.New(slog.DiscardHandler))
 			recorder := httptest.NewRecorder()
 
 			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))

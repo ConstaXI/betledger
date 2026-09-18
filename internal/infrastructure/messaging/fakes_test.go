@@ -87,3 +87,9 @@ func (f *fakeProcessor) Execute(
 	f.received = append(f.received, message)
 	return f.result, f.err
 }
+
+// fakeDeadLetterRecorder counts the messages reported as dead lettered, which
+// the table states through the dead letters it expects in the queue.
+type fakeDeadLetterRecorder struct{ calls int }
+
+func (f *fakeDeadLetterRecorder) MessageDeadLettered(context.Context) { f.calls++ }

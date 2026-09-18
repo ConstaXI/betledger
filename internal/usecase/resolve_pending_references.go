@@ -34,6 +34,7 @@ type ResolvePendingReferences struct {
 	settlement
 	transactor Transactor
 	policy     ReferenceRetryPolicy
+	metrics    Metrics
 }
 
 // NewResolvePendingReferences builds the use case.
@@ -45,6 +46,7 @@ func NewResolvePendingReferences(
 	outbox OutboxRepository,
 	clock Clock,
 	policy ReferenceRetryPolicy,
+	metrics Metrics,
 ) *ResolvePendingReferences {
 	return &ResolvePendingReferences{
 		walletsRepository:      wallets,
@@ -54,6 +56,7 @@ func NewResolvePendingReferences(
 		clock:                  clock,
 		transactor:             transactor,
 		policy:                 policy,
+		metrics:                metrics,
 	}
 }
 
@@ -79,22 +82,45 @@ func (uc *ResolvePendingReferences) Execute(ctx context.Context) (int, error) {
 
 	errs := make([]error, 0, len(leased))
 	for _, pending := range leased {
-		errs = append(errs, uc.retry(ctx, pending))
+		state, err := uc.retry(ctx, pending)
+		errs = append(errs, err)
+		uc.observe(ctx, state, err)
 	}
 	return len(leased), errors.Join(errs...)
 }
 
-// retry tries the operation again. An operation no longer waiting, because
-// another worker concluded it meanwhile, is left untouched.
-func (uc *ResolvePendingReferences) retry(ctx context.Context, pending PendingReference) error {
-	return uc.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
+// observe reports the attempt. A failed attempt reports nothing but the
+// conflict it may carry, because its transaction rolled back and the operation
+// stayed as it was.
+func (uc *ResolvePendingReferences) observe(ctx context.Context, state wager.State, err error) {
+	switch {
+	case errors.Is(err, ErrConcurrentUpdate):
+		uc.metrics.ConcurrencyConflict(ctx)
+	case err == nil && state.IsValid():
+		uc.metrics.ReferenceAttempted(ctx, state)
+	}
+}
+
+// retry tries the operation again and reports the state it left it in. An
+// operation no longer waiting, because another worker concluded it meanwhile,
+// is left untouched and reports the state that worker left.
+func (uc *ResolvePendingReferences) retry(
+	ctx context.Context,
+	pending PendingReference,
+) (wager.State, error) {
+	var state wager.State
+	err := uc.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
 		w, err := uc.walletsRepository.GetForUpdate(ctx, pending.WalletID)
 		if err != nil {
 			return err
 		}
 		transaction, found, err := uc.transactionsRepository.FindByID(ctx, pending.TransactionID)
-		if err != nil || !found || transaction.State() != wager.StatePendingReference {
+		if err != nil || !found {
 			return err
+		}
+		state = transaction.State()
+		if state != wager.StatePendingReference {
+			return nil
 		}
 
 		loadedVersion := w.Version()
@@ -112,7 +138,8 @@ func (uc *ResolvePendingReferences) retry(ctx context.Context, pending PendingRe
 			return err
 		}
 
-		if transaction.State() == wager.StatePendingReference {
+		state = transaction.State()
+		if state == wager.StatePendingReference {
 			nextAttemptAt := uc.clock().Add(uc.policy.delay(transaction.ReferenceAttempts()))
 			return uc.transactionsRepository.UpdatePendingReference(ctx, transaction, nextAttemptAt)
 		}
@@ -125,6 +152,7 @@ func (uc *ResolvePendingReferences) retry(ctx context.Context, pending PendingRe
 				return uc.transactionsRepository.UpdatePendingReference(ctx, transaction, time.Time{})
 			})
 	})
+	return state, err
 }
 
 // delay is the wait before the attempt that follows the given number of

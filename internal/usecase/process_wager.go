@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/ledger"
@@ -44,6 +45,7 @@ type WagerResult struct {
 type ProcessWager struct {
 	settlement
 	transactor Transactor
+	metrics    Metrics
 }
 
 // NewProcessWager builds the use case.
@@ -54,6 +56,7 @@ func NewProcessWager(
 	ledger LedgerRepository,
 	outbox OutboxRepository,
 	clock Clock,
+	metrics Metrics,
 ) *ProcessWager {
 	return &ProcessWager{
 		settlement: settlement{
@@ -64,6 +67,7 @@ func NewProcessWager(
 			clock:                  clock,
 		},
 		transactor: transactor,
+		metrics:    metrics,
 	}
 }
 
@@ -97,6 +101,7 @@ func (uc *ProcessWager) Execute(ctx context.Context, input ProcessWagerInput) (W
 		return WagerResult{}, err
 	}
 
+	startedAt := uc.clock()
 	var result WagerResult
 	err = uc.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
 		w, err := uc.walletsRepository.GetForUpdate(ctx, transaction.WalletID())
@@ -134,9 +139,19 @@ func (uc *ProcessWager) Execute(ctx context.Context, input ProcessWagerInput) (W
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, ErrConcurrentUpdate) {
+			uc.metrics.ConcurrencyConflict(ctx)
+		}
 		return WagerResult{}, err
 	}
 
+	uc.metrics.WagerConcluded(ctx, WagerOutcome{
+		Kind:        transaction.Kind(),
+		State:       result.State,
+		FailureCode: result.FailureCode,
+		Replay:      result.IdempotentReplay,
+		Duration:    uc.clock().Sub(startedAt),
+	})
 	return result, nil
 }
 

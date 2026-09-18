@@ -30,10 +30,11 @@ O projeto está em construção incremental. O que existe hoje:
 - **Health checks** — liveness em `GET /health/live` e readiness em
   `GET /health/ready` nas duas aplicações: a API checa o banco e os workers
   checam o banco e o SQS.
+- **Observabilidade** — logs JSON com os identificadores da operação e métricas
+  Prometheus em `GET /metrics`, nas duas aplicações.
 
-Ainda **não** existe a observabilidade da seção 12: métricas e os
-identificadores nos logs. A seção
-[Próximos passos](#próximos-passos) lista a ordem prevista.
+Dos diferenciais opcionais da seção 12, tracing e dashboards ficaram de fora; a
+seção [Próximos passos](#próximos-passos) explica.
 
 ## Pré-requisitos
 
@@ -394,13 +395,53 @@ O saldo é reconstruído somando créditos e subtraindo débitos de todo o ledge
 inclusive a abertura, e comparado com o saldo armazenado — os dois lidos na mesma
 consulta, para virem do mesmo instante. `difference` é o armazenado menos o
 reconstruído. **A reconciliação nunca corrige nada**: divergência é reportada na
-resposta e registrada no log como erro.
+resposta, registrada no log como erro e contada numa métrica.
 
 ### Correlação
 
 Toda resposta carrega `X-Correlation-Id`. Se a requisição enviar um valor com
 até 128 caracteres entre letras, dígitos, `-`, `_` e `.`, ele é mantido; caso
 contrário, é gerado um novo. O identificador acompanha os eventos gravados.
+
+### Observabilidade
+
+Os logs saem em JSON no stdout. Toda linha de uma operação carrega o
+`correlationId`: na entrada HTTP ele vem do header, e na entrada por SQS é o
+`messageId` do envelope — o mesmo identificador que vai no evento. Ele viaja no
+contexto, então nenhum ponto do código o repete. Os desfechos registram
+`providerId`, `transactionId`, `walletId`, `messageId`, o tipo e o status; valor
+monetário e payload completo ficam fora do log.
+
+```json
+{"time":"2026-09-18T13:20:51.926Z","level":"INFO","msg":"operation concluded",
+ "providerId":"provider-a","externalTransactionId":"transaction-123",
+ "transactionId":"0192f298-345e-7e38-af88-e43f851a819d",
+ "walletId":"0192f291-27dd-7d3f-8071-5f8685deef37","kind":"BET",
+ "status":"PROCESSED","idempotentReplay":false,"correlationId":"req-1"}
+```
+
+As métricas estão em `GET /metrics`, no formato Prometheus, nas duas aplicações —
+cada processo expõe o que ele mesmo fez. O endpoint é público, como os health
+checks, porque um scraper não carrega token; ele não expõe identificador, saldo
+nem payload.
+
+```sh
+curl -s http://localhost:8080/metrics   # API
+curl -s http://localhost:8082/metrics   # workers
+```
+
+| Métrica | O que mostra |
+| --- | --- |
+| `betledger_wager_operations_total` | desfechos por `kind`, `status`, `failure_code` e `replay`, que são as duplicatas |
+| `betledger_wager_duration_seconds` | latência de processamento, por status |
+| `betledger_inbox_messages_total` | mensagens recebidas, separando as reentregas em `duplicate` |
+| `betledger_messages_dead_lettered_total` | mensagens enviadas para a DLQ |
+| `betledger_reference_attempts_total` | tentativas de resolver referência pendente, pelo status que deixaram |
+| `betledger_outbox_publications_total` | publicações por `published`; as falhas são os retries que virão |
+| `betledger_outbox_delay_seconds` | atraso entre gravar o evento e publicá-lo |
+| `betledger_concurrency_conflicts_total` | escritas recusadas porque a linha mudou depois de lida |
+| `betledger_wallet_reconciliations_total` | reconciliações por `consistent`, ou seja, as divergências |
+| `betledger_http_duration_seconds` | latência das requisições por `method`, `route` e `status` |
 
 ### Erros
 
@@ -495,6 +536,8 @@ internal/usecase/                    casos de uso e as portas que eles consomem
 internal/infrastructure/auth/        validação dos access tokens do Keycloak
 internal/infrastructure/config/      carga e validação da configuração de ambiente
 internal/infrastructure/httpserver/  handlers, middleware e ciclo de vida do servidor
+internal/infrastructure/logging/     logger JSON e o correlationId que viaja no contexto
+internal/infrastructure/metrics/     instrumentos da aplicação e o endpoint /metrics
 internal/infrastructure/messaging/   cliente SQS, publicação dos eventos e consumo das operações
 internal/infrastructure/postgres/    repositórios, migrations e queries do sqlc
 internal/infrastructure/worker/      workers em segundo plano: retomada de referências e publicação da outbox
@@ -509,6 +552,12 @@ implementando as portas dos casos de uso.
 
 ## Próximos passos
 
-Na ordem prevista, seguindo [SPECS.md](SPECS.md):
+Tudo que a [SPECS.md](SPECS.md) exige está implementado. O que resta são os
+diferenciais que ela marca como opcionais na seção 12:
 
-1. Observabilidade: métricas e os identificadores nos logs (seção 12).
+1. Tracing com OpenTelemetry. As métricas já usam a API do OpenTelemetry, então
+   o tracing entra pelo mesmo caminho: um `TracerProvider` no `metrics.Module`,
+   ou num módulo irmão, e a instrumentação do servidor HTTP, do cliente SQS e do
+   pool do PostgreSQL.
+2. Dashboards e alertas sobre as métricas expostas, com um Prometheus e um
+   Grafana no Compose.

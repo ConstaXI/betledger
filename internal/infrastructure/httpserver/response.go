@@ -62,7 +62,6 @@ func writeError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err
 	if status >= http.StatusInternalServerError {
 		logger.ErrorContext(r.Context(), "request failed",
 			"error", err,
-			"correlationId", correlationID(r.Context()),
 			"method", r.Method,
 			"path", r.URL.Path,
 		)

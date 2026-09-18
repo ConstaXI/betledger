@@ -259,6 +259,7 @@ func TestProcessWagerHandler(t *testing.T) {
 				[]Route{&WageringHandler{processWager: processor, logger: slog.New(slog.DiscardHandler)}},
 				nil,
 				fakeTokenVerifier{principal: providerA},
+				&fakeRequestRecorder{},
 				slog.New(slog.DiscardHandler),
 			)
 			request := httptest.NewRequest(http.MethodPost, "/wagering/transactions", strings.NewReader(test.body))
@@ -368,6 +369,7 @@ func TestWageringReadHandlers(t *testing.T) {
 				[]Route{&WageringHandler{readTransaction: reader, logger: slog.New(slog.DiscardHandler)}},
 				nil,
 				fakeTokenVerifier{principal: providerA},
+				&fakeRequestRecorder{},
 				slog.New(slog.DiscardHandler),
 			)
 			request := httptest.NewRequest(http.MethodGet, test.path, nil)

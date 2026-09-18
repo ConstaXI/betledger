@@ -120,7 +120,7 @@ func applyBet(t *testing.T) (*fakeTransactor, usecase.WagerResult) {
 	require.NoError(t, err)
 	transactor := newFakeTransactor(w)
 	processWager := usecase.NewProcessWager(transactor, fakeWallets{}, fakeTransactions{}, fakeLedger{},
-		fakeOutbox{}, func() time.Time { return fixedNow })
+		fakeOutbox{}, func() time.Time { return fixedNow }, &fakeMetrics{})
 
 	input := betInput(w.ID(), playerID, "transaction-123")
 	input.Kind = wager.KindBet

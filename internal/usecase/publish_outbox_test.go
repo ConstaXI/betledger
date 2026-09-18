@@ -31,6 +31,7 @@ func TestPublishOutboxExecute(t *testing.T) {
 		wantPublished     []string
 		wantAttempts      int
 		wantNextAttemptAt time.Time
+		wantMetrics       []string
 	}{
 		{
 			name:              "should accept when the oldest event of a wallet is due",
@@ -38,6 +39,7 @@ func TestPublishOutboxExecute(t *testing.T) {
 			wantTaken:         1,
 			wantPublished:     []string{processed},
 			wantNextAttemptAt: fixedNow.Add(30 * time.Second),
+			wantMetrics:       []string{"publication true"},
 		},
 		{
 			name:              "should accept when the next event of the wallet follows on another run",
@@ -46,6 +48,7 @@ func TestPublishOutboxExecute(t *testing.T) {
 			wantTaken:         1,
 			wantPublished:     []string{processed, balanceChanged},
 			wantNextAttemptAt: fixedNow.Add(30 * time.Second),
+			wantMetrics:       []string{"publication true", "publication true"},
 		},
 		{
 			name:              "should accept when events of different wallets go out in the same run",
@@ -53,6 +56,7 @@ func TestPublishOutboxExecute(t *testing.T) {
 			wantTaken:         2,
 			wantPublished:     []string{processed, processed},
 			wantNextAttemptAt: fixedNow.Add(30 * time.Second),
+			wantMetrics:       []string{"publication true", "publication true"},
 		},
 		{
 			name:              "should return ErrUnavailable when the publication fails, scheduling a retry",
@@ -62,6 +66,7 @@ func TestPublishOutboxExecute(t *testing.T) {
 			wantTaken:         1,
 			wantAttempts:      1,
 			wantNextAttemptAt: fixedNow.Add(time.Second),
+			wantMetrics:       []string{"publication false"},
 		},
 		{
 			name:              "should report nothing taken when the failed event is not due, holding the wallet back",
@@ -70,6 +75,7 @@ func TestPublishOutboxExecute(t *testing.T) {
 			runsBefore:        1,
 			wantAttempts:      1,
 			wantNextAttemptAt: fixedNow.Add(time.Second),
+			wantMetrics:       []string{"publication false"},
 		},
 		{
 			name:              "should return ErrUnavailable with a doubled delay when the retry fails too",
@@ -81,6 +87,7 @@ func TestPublishOutboxExecute(t *testing.T) {
 			wantTaken:         1,
 			wantAttempts:      2,
 			wantNextAttemptAt: fixedNow.Add(time.Second + 2*time.Second),
+			wantMetrics:       []string{"publication false", "publication false"},
 		},
 		{
 			name:              "should accept when the retry succeeds, publishing the event once",
@@ -92,6 +99,7 @@ func TestPublishOutboxExecute(t *testing.T) {
 			wantPublished:     []string{processed},
 			wantAttempts:      1,
 			wantNextAttemptAt: fixedNow.Add(time.Second + 30*time.Second),
+			wantMetrics:       []string{"publication false", "publication true"},
 		},
 		{
 			name:              "should report nothing taken when every event was published",
@@ -99,6 +107,7 @@ func TestPublishOutboxExecute(t *testing.T) {
 			runsBefore:        2,
 			wantPublished:     []string{processed, balanceChanged},
 			wantNextAttemptAt: fixedNow.Add(30 * time.Second),
+			wantMetrics:       []string{"publication true", "publication true"},
 		},
 	}
 
@@ -121,12 +130,13 @@ func TestPublishOutboxExecute(t *testing.T) {
 				require.NoError(t, err)
 			}
 			publisher := &fakePublisher{failures: test.failures}
+			metrics := &fakeMetrics{}
 			uc := usecase.NewPublishOutbox(transactor, fakeOutbox{}, publisher, clock, usecase.PublicationPolicy{
 				BaseDelay: time.Second,
 				MaxDelay:  time.Minute,
 				Lease:     30 * time.Second,
 				BatchSize: 10,
-			})
+			}, metrics)
 			for range test.runsBefore {
 				_, _ = uc.Execute(ctx)
 				now = now.Add(test.advance)
@@ -146,6 +156,7 @@ func TestPublishOutboxExecute(t *testing.T) {
 			assert.Len(t, transactor.committed.published, len(test.wantPublished))
 			assert.Equal(t, test.wantAttempts, transactor.committed.publications[firstID])
 			assert.Equal(t, test.wantNextAttemptAt, transactor.committed.nextAttempts[firstID])
+			assert.Equal(t, test.wantMetrics, metrics.calls)
 		})
 	}
 }

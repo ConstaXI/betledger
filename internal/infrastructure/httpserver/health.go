@@ -9,6 +9,14 @@ import (
 
 const readinessTimeout = 2 * time.Second
 
+// healthPathPrefix is where the liveness and readiness endpoints are mounted,
+// in every application, and metricsPath where the metrics are exposed. Both are
+// scraped on a schedule, not called by a client.
+const (
+	healthPathPrefix = "/health/"
+	metricsPath      = "/metrics"
+)
+
 type healthResponse struct {
 	Status  string   `json:"status"`
 	Failing []string `json:"failing,omitempty"`

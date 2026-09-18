@@ -51,6 +51,7 @@ func TestProcessWagerExecute(t *testing.T) {
 		wantTransactions  int
 		wantEntries       int
 		wantEventTypes    []event.Type
+		wantMetrics       []string
 	}{
 		{
 			name:              "should accept when the balance covers the bet",
@@ -63,6 +64,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  1,
 			wantEntries:       1,
 			wantEventTypes:    processed,
+			wantMetrics:       []string{"wager BET PROCESSED false"},
 		},
 		{
 			name:              "should accept when the bet takes the whole balance",
@@ -75,6 +77,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  1,
 			wantEntries:       1,
 			wantEventTypes:    processed,
+			wantMetrics:       []string{"wager BET PROCESSED false"},
 		},
 		{
 			name:              "should return INSUFFICIENT_FUNDS when the bet exceeds the balance",
@@ -86,6 +89,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 1,
 			wantTransactions:  1,
 			wantEventTypes:    rejected,
+			wantMetrics:       []string{"wager BET REJECTED false"},
 		},
 		{
 			name:              "should return WALLET_PLAYER_MISMATCH when the player does not own the wallet",
@@ -97,6 +101,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 1,
 			wantTransactions:  1,
 			wantEventTypes:    rejected,
+			wantMetrics:       []string{"wager BET REJECTED false"},
 		},
 		{
 			name:         "should return CURRENCY_MISMATCH when the bet is in another currency",
@@ -110,6 +115,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 1,
 			wantTransactions:  1,
 			wantEventTypes:    rejected,
+			wantMetrics:       []string{"wager BET REJECTED false"},
 		},
 		{
 			name:              "should return WALLET_NOT_FOUND when the wallet does not exist",
@@ -130,6 +136,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  1,
 			wantEntries:       1,
 			wantEventTypes:    processed,
+			wantMetrics:       []string{"wager WIN PROCESSED false"},
 		},
 		{
 			name:              "should accept when a loss records the round without moving the balance",
@@ -141,6 +148,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 1,
 			wantTransactions:  1,
 			wantEventTypes:    []event.Type{event.TypeWagerTransactionProcessed},
+			wantMetrics:       []string{"wager LOSS PROCESSED false"},
 		},
 		{
 			name:         "should return CURRENCY_MISMATCH when a loss is in another currency",
@@ -155,6 +163,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 1,
 			wantTransactions:  1,
 			wantEventTypes:    rejected,
+			wantMetrics:       []string{"wager LOSS REJECTED false"},
 		},
 		{
 			name:              "should return INVALID_AMOUNT when a loss carries an amount",
@@ -210,6 +219,11 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  2,
 			wantEntries:       2,
 			wantEventTypes:    slices.Concat(processed, processed),
+			wantMetrics: []string{
+				"wager BET PROCESSED false",
+				"wager BET PROCESSED false",
+				"wager BET PROCESSED true",
+			},
 		},
 		{
 			name:              "should report a replay of INSUFFICIENT_FUNDS when the rejected bet is resent",
@@ -223,6 +237,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 1,
 			wantTransactions:  1,
 			wantEventTypes:    rejected,
+			wantMetrics:       []string{"wager BET REJECTED false", "wager BET REJECTED true"},
 		},
 		{
 			name:              "should return IDEMPOTENCY_CONFLICT when the key is reused with a different payload",
@@ -235,6 +250,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  1,
 			wantEntries:       1,
 			wantEventTypes:    processed,
+			wantMetrics:       []string{"wager BET PROCESSED false"},
 		},
 		{
 			name:              "should return IDEMPOTENCY_CONFLICT when the operation is resent with another key",
@@ -247,6 +263,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  1,
 			wantEntries:       1,
 			wantEventTypes:    processed,
+			wantMetrics:       []string{"wager BET PROCESSED false"},
 		},
 		{
 			name:              "should accept when a refund returns a processed bet",
@@ -260,6 +277,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  2,
 			wantEntries:       2,
 			wantEventTypes:    slices.Concat(processed, processed),
+			wantMetrics:       []string{"wager BET PROCESSED false", "wager REFUND PROCESSED false"},
 		},
 		{
 			name:              "should accept when a win refers to a processed bet",
@@ -273,6 +291,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  2,
 			wantEntries:       2,
 			wantEventTypes:    slices.Concat(processed, processed),
+			wantMetrics:       []string{"wager BET PROCESSED false", "wager WIN PROCESSED false"},
 		},
 		{
 			name:              "should accept when a rollback undoes a processed win",
@@ -286,6 +305,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  2,
 			wantEntries:       2,
 			wantEventTypes:    slices.Concat(processed, processed),
+			wantMetrics:       []string{"wager WIN PROCESSED false", "wager ROLLBACK PROCESSED false"},
 		},
 		{
 			name:         "should return REFERENCE_ALREADY_REVERSED when a bet is refunded twice",
@@ -302,6 +322,11 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  3,
 			wantEntries:       2,
 			wantEventTypes:    slices.Concat(processed, processed, rejected),
+			wantMetrics: []string{
+				"wager BET PROCESSED false",
+				"wager REFUND PROCESSED false",
+				"wager REFUND REJECTED false",
+			},
 		},
 		{
 			name:         "should return REFERENCE_ALREADY_REVERSED when a refunded bet is rolled back",
@@ -318,6 +343,11 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  3,
 			wantEntries:       2,
 			wantEventTypes:    slices.Concat(processed, processed, rejected),
+			wantMetrics: []string{
+				"wager BET PROCESSED false",
+				"wager REFUND PROCESSED false",
+				"wager ROLLBACK REJECTED false",
+			},
 		},
 		{
 			name:              "should return REFERENCE_NOT_PROCESSED when the bet was rejected",
@@ -330,6 +360,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 1,
 			wantTransactions:  2,
 			wantEventTypes:    slices.Concat(rejected, rejected),
+			wantMetrics:       []string{"wager BET REJECTED false", "wager REFUND REJECTED false"},
 		},
 		{
 			name:              "should return REFERENCE_AMOUNT_MISMATCH when a refund is partial",
@@ -343,6 +374,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  2,
 			wantEntries:       1,
 			wantEventTypes:    slices.Concat(processed, rejected),
+			wantMetrics:       []string{"wager BET PROCESSED false", "wager REFUND REJECTED false"},
 		},
 		{
 			name:         "should return INSUFFICIENT_FUNDS_FOR_REVERSAL when rolling back a spent win",
@@ -359,6 +391,11 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantTransactions:  3,
 			wantEntries:       2,
 			wantEventTypes:    slices.Concat(processed, processed, rejected),
+			wantMetrics: []string{
+				"wager WIN PROCESSED false",
+				"wager BET PROCESSED false",
+				"wager ROLLBACK REJECTED false",
+			},
 		},
 		{
 			name:              "should report PENDING_REFERENCE when the referenced operation has not arrived",
@@ -369,6 +406,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 1,
 			wantTransactions:  1,
 			wantEventTypes:    pending,
+			wantMetrics:       []string{"wager REFUND PENDING_REFERENCE false"},
 		},
 		{
 			name:              "should report PENDING_REFERENCE when the reference is itself pending",
@@ -380,6 +418,10 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 1,
 			wantTransactions:  2,
 			wantEventTypes:    slices.Concat(pending, pending),
+			wantMetrics: []string{
+				"wager REFUND PENDING_REFERENCE false",
+				"wager ROLLBACK PENDING_REFERENCE false",
+			},
 		},
 		{
 			name:              "should report a replay of PENDING_REFERENCE when the waiting refund is resent",
@@ -392,6 +434,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			wantWalletVersion: 1,
 			wantTransactions:  1,
 			wantEventTypes:    pending,
+			wantMetrics:       []string{"wager REFUND PENDING_REFERENCE false", "wager REFUND PENDING_REFERENCE true"},
 		},
 	}
 
@@ -403,8 +446,9 @@ func TestProcessWagerExecute(t *testing.T) {
 			w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(test.initialMinor, brl))
 			require.NoError(t, err)
 			transactor := newFakeTransactor(w)
+			metrics := &fakeMetrics{}
 			uc := usecase.NewProcessWager(transactor, fakeWallets{}, fakeTransactions{}, fakeLedger{},
-				fakeOutbox{err: test.outboxErr}, func() time.Time { return fixedNow })
+				fakeOutbox{err: test.outboxErr}, func() time.Time { return fixedNow }, metrics)
 			base := usecase.ProcessWagerInput{
 				ProviderID:            "provider-a",
 				ExternalTransactionID: "transaction-123",
@@ -441,6 +485,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			assert.Len(t, transactor.committed.transactions, test.wantTransactions)
 			assert.Len(t, transactor.committed.entries, test.wantEntries)
 			assert.Equal(t, test.wantEventTypes, transactor.committed.eventTypes)
+			assert.Equal(t, test.wantMetrics, metrics.calls)
 			for _, e := range transactor.committed.events {
 				assert.Equal(t, fixedNow, e.OccurredAt)
 			}

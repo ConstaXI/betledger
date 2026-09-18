@@ -28,6 +28,45 @@ var ErrConcurrentUpdate = errors.New("usecase: wallet changed concurrently")
 // deterministic under test.
 type Clock func() time.Time
 
+// WagerOutcome is what a concluded operation reports to the metrics. It carries
+// no identifier: a metric is aggregated, and a label per wallet or per
+// transaction would make it unusable.
+type WagerOutcome struct {
+	Kind  wager.Kind
+	State wager.State
+	// FailureCode explains a REJECTED outcome and is empty otherwise.
+	FailureCode domain.FailureCode
+	// Replay tells that the result was already persisted and nothing was
+	// applied again.
+	Replay bool
+	// Duration is how long applying the operation took, including the database
+	// transaction.
+	Duration time.Duration
+}
+
+// Metrics records what the use cases decided, for the observability stack. An
+// implementation must be safe for concurrent use and must never fail an
+// operation: it reports outcomes, it does not take part in them.
+type Metrics interface {
+	// WagerConcluded records an operation that reached a state.
+	WagerConcluded(ctx context.Context, outcome WagerOutcome)
+	// MessageTaken records a message the consumer took in, telling a redelivery
+	// the inbox already held apart from a new message.
+	MessageTaken(ctx context.Context, duplicate bool)
+	// ReferenceAttempted records another attempt on an operation waiting for its
+	// reference, and the state the attempt left it in.
+	ReferenceAttempted(ctx context.Context, state wager.State)
+	// EventPublished records a publication of a recorded event, with how long
+	// the event waited since it occurred.
+	EventPublished(ctx context.Context, delay time.Duration, published bool)
+	// ReconciliationChecked records a reconciliation and whether the stored
+	// balance matched the ledger.
+	ReconciliationChecked(ctx context.Context, consistent bool)
+	// ConcurrencyConflict records a write refused because the row had changed
+	// since it was loaded.
+	ConcurrencyConflict(ctx context.Context)
+}
+
 // Transactor delimits an atomic change across repositories.
 type Transactor interface {
 	// WithinTransaction runs fn with a database transaction carried by its ctx.
@@ -134,6 +173,9 @@ type OutboxRecord struct {
 	EventID     domain.ID
 	AggregateID domain.ID
 	EventType   string
+	// OccurredAt is when the event happened, which the publisher compares with
+	// the present to report how long the event waited.
+	OccurredAt time.Time
 	// Payload is the immutable JSON snapshot of the event, published byte for
 	// byte on every attempt.
 	Payload []byte

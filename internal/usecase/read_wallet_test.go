@@ -71,12 +71,12 @@ func TestReadWalletLedger(t *testing.T) {
 			require.NoError(t, err)
 			transactor := newFakeTransactor(w)
 			processWager := usecase.NewProcessWager(transactor, fakeWallets{}, fakeTransactions{}, fakeLedger{},
-				fakeOutbox{}, func() time.Time { return fixedNow })
+				fakeOutbox{}, func() time.Time { return fixedNow }, &fakeMetrics{})
 			for bet := range test.bets {
 				_, err := processWager.Execute(ctx, betInput(w.ID(), playerID, string(rune('a'+bet))))
 				require.NoError(t, err)
 			}
-			uc := usecase.NewReadWallet(transactor, fakeWallets{}, fakeLedger{})
+			uc := usecase.NewReadWallet(transactor, fakeWallets{}, fakeLedger{}, &fakeMetrics{})
 			var cursor *usecase.LedgerCursor
 			for range test.pagesBefore {
 				page, err := uc.Ledger(ctx, w.ID(), cursor, test.limit)
@@ -108,6 +108,7 @@ func TestReadWalletReconcile(t *testing.T) {
 		wantDifference     money.Money
 		wantConsistent     bool
 		wantCheckedEntries int
+		wantMetrics        []string
 	}{
 		{
 			name:               "should report consistent when the opening alone explains the balance",
@@ -116,6 +117,7 @@ func TestReadWalletReconcile(t *testing.T) {
 			wantDifference:     money.MustNew(0, brl),
 			wantConsistent:     true,
 			wantCheckedEntries: 1,
+			wantMetrics:        []string{"reconciliation true"},
 		},
 		{
 			name:               "should report consistent when the bets are in the ledger",
@@ -125,6 +127,7 @@ func TestReadWalletReconcile(t *testing.T) {
 			wantDifference:     money.MustNew(0, brl),
 			wantConsistent:     true,
 			wantCheckedEntries: 3,
+			wantMetrics:        []string{"reconciliation true"},
 		},
 		{
 			name:          "should return WALLET_NOT_FOUND when the wallet does not exist",
@@ -150,12 +153,13 @@ func TestReadWalletReconcile(t *testing.T) {
 			})
 			require.NoError(t, err)
 			processWager := usecase.NewProcessWager(transactor, fakeWallets{}, fakeTransactions{}, fakeLedger{},
-				fakeOutbox{}, clock)
+				fakeOutbox{}, clock, &fakeMetrics{})
 			for bet := range test.bets {
 				_, err := processWager.Execute(ctx, betInput(opened.ID(), playerID, string(rune('a'+bet))))
 				require.NoError(t, err)
 			}
-			uc := usecase.NewReadWallet(transactor, fakeWallets{}, fakeLedger{})
+			metrics := &fakeMetrics{}
+			uc := usecase.NewReadWallet(transactor, fakeWallets{}, fakeLedger{}, metrics)
 			walletID := opened.ID()
 			if test.unknownWallet {
 				walletID = domain.NewID()
@@ -169,6 +173,7 @@ func TestReadWalletReconcile(t *testing.T) {
 			assert.Equal(t, test.wantDifference, got.Difference)
 			assert.Equal(t, test.wantConsistent, got.Consistent)
 			assert.Equal(t, test.wantCheckedEntries, got.CheckedEntries)
+			assert.Equal(t, test.wantMetrics, metrics.calls)
 		})
 	}
 }

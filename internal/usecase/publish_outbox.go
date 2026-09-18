@@ -31,6 +31,7 @@ type PublishOutbox struct {
 	publisher  EventPublisher
 	clock      Clock
 	policy     PublicationPolicy
+	metrics    Metrics
 }
 
 // NewPublishOutbox builds the use case.
@@ -40,6 +41,7 @@ func NewPublishOutbox(
 	publisher EventPublisher,
 	clock Clock,
 	policy PublicationPolicy,
+	metrics Metrics,
 ) *PublishOutbox {
 	return &PublishOutbox{
 		transactor: transactor,
@@ -47,6 +49,7 @@ func NewPublishOutbox(
 		publisher:  publisher,
 		clock:      clock,
 		policy:     policy,
+		metrics:    metrics,
 	}
 }
 
@@ -75,12 +78,15 @@ func (uc *PublishOutbox) Execute(ctx context.Context) (int, error) {
 
 func (uc *PublishOutbox) publish(ctx context.Context, record OutboxRecord) error {
 	published := uc.publisher.Publish(ctx, record)
-	return errors.Join(published, uc.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
+	recorded := uc.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
 		if published != nil {
 			attempts := record.Attempts + 1
 			return uc.outbox.ReschedulePublication(ctx, record.EventID, attempts,
 				uc.clock().Add(backoff(uc.policy.BaseDelay, uc.policy.MaxDelay, attempts)))
 		}
 		return uc.outbox.MarkPublished(ctx, record.EventID, uc.clock())
-	}))
+	})
+
+	uc.metrics.EventPublished(ctx, uc.clock().Sub(record.OccurredAt), published == nil)
+	return errors.Join(published, recorded)
 }

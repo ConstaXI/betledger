@@ -21,7 +21,7 @@ WHERE id IN (
     LIMIT sqlc.arg(batch_size)::int
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, aggregate_id, event_type, payload, attempts;
+RETURNING id, aggregate_id, event_type, payload, occurred_at, attempts;
 
 -- name: MarkOutboxEventPublished :execrows
 UPDATE outbox_events

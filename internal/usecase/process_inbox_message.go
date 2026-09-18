@@ -30,6 +30,7 @@ type ProcessInboxMessage struct {
 	transactor   Transactor
 	inbox        InboxRepository
 	processWager *ProcessWager
+	metrics      Metrics
 }
 
 // NewProcessInboxMessage builds the use case.
@@ -37,8 +38,14 @@ func NewProcessInboxMessage(
 	transactor Transactor,
 	inbox InboxRepository,
 	processWager *ProcessWager,
+	metrics Metrics,
 ) *ProcessInboxMessage {
-	return &ProcessInboxMessage{transactor: transactor, inbox: inbox, processWager: processWager}
+	return &ProcessInboxMessage{
+		transactor:   transactor,
+		inbox:        inbox,
+		processWager: processWager,
+		metrics:      metrics,
+	}
 }
 
 // Execute takes the message in. The same identifier carrying another payload is
@@ -84,5 +91,7 @@ func (uc *ProcessInboxMessage) Execute(ctx context.Context, message InboundMessa
 	if err != nil {
 		return InboundResult{}, err
 	}
+
+	uc.metrics.MessageTaken(ctx, result.Duplicate)
 	return result, nil
 }

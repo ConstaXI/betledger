@@ -176,6 +176,7 @@ func TestOpenWalletHandler(t *testing.T) {
 				[]Route{&WalletHandler{openWallet: opener, logger: slog.New(slog.DiscardHandler)}},
 				nil,
 				fakeTokenVerifier{principal: test.principal},
+				&fakeRequestRecorder{},
 				slog.New(slog.DiscardHandler),
 			)
 			request := httptest.NewRequest(http.MethodPost, "/wallets", strings.NewReader(test.body))
@@ -327,6 +328,7 @@ func TestWalletReadHandlers(t *testing.T) {
 				[]Route{&WalletHandler{readWallet: reader, logger: slog.New(slog.DiscardHandler)}},
 				nil,
 				fakeTokenVerifier{principal: walletOperator},
+				&fakeRequestRecorder{},
 				slog.New(slog.DiscardHandler),
 			)
 			request := httptest.NewRequest(test.method, test.path, nil)

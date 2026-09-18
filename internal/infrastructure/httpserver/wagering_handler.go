@@ -10,6 +10,7 @@ import (
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/infrastructure/auth"
+	"github.com/davibanfi/betledger/internal/infrastructure/logging"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
@@ -123,12 +124,22 @@ func (h *WageringHandler) handleProcessWager(w http.ResponseWriter, r *http.Requ
 		Kind:                           kind,
 		Money:                          amount,
 		ReferenceExternalTransactionID: request.ReferenceExternalTransactionID,
-		CorrelationID:                  correlationID(r.Context()),
+		CorrelationID:                  logging.CorrelationID(r.Context()),
 	})
 	if err != nil {
 		writeError(w, r, h.logger, err)
 		return
 	}
+	h.logger.InfoContext(r.Context(), "operation concluded",
+		"providerId", providerID,
+		"externalTransactionId", request.ExternalTransactionID,
+		"transactionId", result.TransactionID.String(),
+		"walletId", walletID.String(),
+		"kind", kind,
+		"status", result.State,
+		"failureCode", result.FailureCode,
+		"idempotentReplay", result.IdempotentReplay,
+	)
 
 	if err := writeJSON(w, wagerResultStatus(result), newWagerResultResponse(result)); err != nil {
 		writeError(w, r, h.logger, err)

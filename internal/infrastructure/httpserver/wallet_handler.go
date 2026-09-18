@@ -14,6 +14,7 @@ import (
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
 	"github.com/davibanfi/betledger/internal/infrastructure/auth"
+	"github.com/davibanfi/betledger/internal/infrastructure/logging"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
@@ -86,12 +87,15 @@ func (h *WalletHandler) handleOpenWallet(w http.ResponseWriter, r *http.Request)
 	opened, err := h.openWallet.Execute(r.Context(), usecase.OpenWalletInput{
 		PlayerID:       playerID,
 		InitialBalance: initialBalance,
-		CorrelationID:  correlationID(r.Context()),
+		CorrelationID:  logging.CorrelationID(r.Context()),
 	})
 	if err != nil {
 		writeError(w, r, h.logger, err)
 		return
 	}
+
+	h.logger.InfoContext(r.Context(), "wallet opened",
+		"walletId", opened.ID().String(), "playerId", opened.PlayerID().String())
 
 	w.Header().Set("Location", "/wallets/"+opened.ID().String())
 	err = writeJSON(w, http.StatusCreated, newWalletResponse(opened))
@@ -199,7 +203,7 @@ func (h *WalletHandler) handleReconcile(w http.ResponseWriter, r *http.Request) 
 	}
 	if !result.Consistent {
 		h.logger.ErrorContext(r.Context(), "wallet balance diverges from its ledger",
-			"walletId", result.WalletID, "difference", result.Difference.String(),
+			"walletId", result.WalletID.String(), "difference", result.Difference.String(),
 			"checkedEntries", result.CheckedEntries)
 	}
 

@@ -17,6 +17,8 @@ import (
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/infrastructure/config"
+	"github.com/davibanfi/betledger/internal/infrastructure/logging"
+	"github.com/davibanfi/betledger/internal/infrastructure/metrics"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
@@ -52,9 +54,15 @@ type messageProcessor interface {
 	Execute(ctx context.Context, message usecase.InboundMessage) (usecase.InboundResult, error)
 }
 
+// deadLetterRecorder records the messages that could not be handled.
+type deadLetterRecorder interface {
+	MessageDeadLettered(ctx context.Context)
+}
+
 type WagerConsumer struct {
 	client            queueAPI
 	processMessage    messageProcessor
+	metrics           deadLetterRecorder
 	logger            *slog.Logger
 	queueName         string
 	deadLetterName    string
@@ -72,11 +80,13 @@ func NewWagerConsumer(
 	client *sqs.Client,
 	cfg config.Config,
 	processMessage *usecase.ProcessInboxMessage,
+	recorder *metrics.Recorder,
 	logger *slog.Logger,
 ) *WagerConsumer {
 	consumer := &WagerConsumer{
 		client:            client,
 		processMessage:    processMessage,
+		metrics:           recorder,
 		logger:            logger,
 		queueName:         cfg.WagerQueueName,
 		deadLetterName:    cfg.WagerDeadLetterQueueName,
@@ -129,19 +139,24 @@ func (c *WagerConsumer) Execute(ctx context.Context) (int, error) {
 // timeout, past which the message is delivered again anyway, so a dependency
 // that stops answering does not hold the consumer. Reporting the outcome to the
 // queue runs on its own deadline, so that a handling that timed out can still
-// be dead lettered or deleted.
+// be dead lettered or deleted. The envelope identifier correlates every record
+// of the message, as it does the events the operation produces.
 func (c *WagerConsumer) handle(ctx context.Context, message types.Message) error {
+	inbound, err := toInboundMessage(message)
+	ctx = logging.WithCorrelationID(ctx, inbound.MessageID)
+
 	handling, cancelHandling := context.WithTimeout(ctx, c.visibilityTimeout)
 	defer cancelHandling()
 
-	inbound, err := toInboundMessage(message)
 	if err == nil {
 		var result usecase.InboundResult
 		result, err = c.processMessage.Execute(handling, inbound)
 		if err == nil {
 			c.logger.InfoContext(ctx, "message handled",
 				"messageId", inbound.MessageID,
-				"transactionId", result.TransactionID,
+				"providerId", inbound.Input.ProviderID,
+				"walletId", inbound.Input.WalletID.String(),
+				"transactionId", result.TransactionID.String(),
 				"state", result.State,
 				"duplicate", result.Duplicate,
 			)
@@ -154,8 +169,12 @@ func (c *WagerConsumer) handle(ctx context.Context, message types.Message) error
 	if errors.Is(err, usecase.ErrUnavailable) {
 		return fmt.Errorf("message %s will be delivered again: %w", aws.ToString(message.MessageId), err)
 	}
+	c.metrics.MessageDeadLettered(ctx)
 	c.logger.ErrorContext(ctx, "message sent to the dead letter queue",
-		"messageId", aws.ToString(message.MessageId), "error", err)
+		"messageId", inbound.MessageID,
+		"queueMessageId", aws.ToString(message.MessageId),
+		"error", err,
+	)
 	reporting, cancelReporting := context.WithTimeout(ctx, c.visibilityTimeout)
 	defer cancelReporting()
 	return errors.Join(c.deadLetter(reporting, message, err), c.delete(reporting, message))

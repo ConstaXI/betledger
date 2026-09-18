@@ -24,6 +24,7 @@ import (
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
 	"github.com/davibanfi/betledger/internal/infrastructure/auth"
+	"github.com/davibanfi/betledger/internal/infrastructure/metrics"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
 
@@ -41,24 +42,20 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 	entry, err := opened.OpeningLedgerEntry(domain.NewID())
 	require.NoError(t, err)
 	recordedAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
-	walletReader := &fakeWalletReader{
-		wallet: opened,
-		page: usecase.LedgerPage{
-			Entries:    []usecase.LedgerEntry{{Entry: entry, RecordedAt: recordedAt}},
-			NextCursor: &usecase.LedgerCursor{RecordedAt: recordedAt, EntryID: entry.ID()},
-		},
-		result: usecase.ReconciliationResult{
-			WalletID:       opened.ID(),
-			Stored:         money.MustNew(100000, money.MustCurrency("BRL")),
-			Calculated:     money.MustNew(100000, money.MustCurrency("BRL")),
-			Difference:     money.MustNew(0, money.MustCurrency("BRL")),
-			Consistent:     true,
-			CheckedEntries: 1,
-		},
+	page := usecase.LedgerPage{
+		Entries:    []usecase.LedgerEntry{{Entry: entry, RecordedAt: recordedAt}},
+		NextCursor: &usecase.LedgerCursor{RecordedAt: recordedAt, EntryID: entry.ID()},
+	}
+	reconciliation := usecase.ReconciliationResult{
+		WalletID:       opened.ID(),
+		Stored:         money.MustNew(100000, money.MustCurrency("BRL")),
+		Calculated:     money.MustNew(100000, money.MustCurrency("BRL")),
+		Difference:     money.MustNew(0, money.MustCurrency("BRL")),
+		Consistent:     true,
+		CheckedEntries: 1,
 	}
 	processedBet := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
 	require.NoError(t, processedBet.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL")))
-	transactionReader := &fakeTransactionReader{transaction: processedBet}
 
 	const validBody = `{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"1000.00","currency":"BRL"}}`
 	healthy := HealthCheck{Name: "postgres", Check: func(context.Context) error { return nil }}
@@ -297,6 +294,12 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
+			name:       "should match the contract when the metrics are scraped",
+			method:     http.MethodGet,
+			path:       "/metrics",
+			wantStatus: http.StatusOK,
+		},
+		{
 			name:       "should match the contract when the process is alive",
 			method:     http.MethodGet,
 			path:       "/health/live",
@@ -324,8 +327,10 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 
 			opener := &fakeWalletOpener{wallet: opened, err: test.useCaseErr}
 			processor := &fakeWagerProcessor{result: test.wagerResult, err: test.useCaseErr}
+			walletReader := &fakeWalletReader{wallet: opened, page: page, result: reconciliation}
+			transactionReader := &fakeTransactionReader{transaction: processedBet}
 			handler := NewHandler(
-				nil,
+				[]Route{metrics.NewRoute(metrics.NewRegistry())},
 				[]Route{
 					&WalletHandler{
 						openWallet: opener,
@@ -340,6 +345,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 				},
 				test.checks,
 				test.verifier,
+				&fakeRequestRecorder{},
 				slog.New(slog.DiscardHandler),
 			)
 			request := httptest.NewRequest(test.method, "http://localhost:8080"+test.path, strings.NewReader(test.body))
@@ -397,7 +403,8 @@ func TestDocsHandler(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			handler := NewHandler([]Route{NewDocsHandler()}, nil, nil, fakeTokenVerifier{err: errRejectedToken}, slog.New(slog.DiscardHandler))
+			handler := NewHandler([]Route{NewDocsHandler()}, nil, nil, fakeTokenVerifier{err: errRejectedToken},
+				&fakeRequestRecorder{}, slog.New(slog.DiscardHandler))
 			recorder := httptest.NewRecorder()
 
 			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))

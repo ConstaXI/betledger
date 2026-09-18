@@ -42,24 +42,33 @@ var Module = fx.Module("httpserver",
 	fx.Invoke(registerLifecycle),
 )
 
-// HealthModule provides a server that serves only the health endpoints, for an
-// application without business routes, such as the workers. Readiness checks
-// come from the "readiness" group.
+// HealthModule provides a server that serves only the health endpoints and the
+// public routes, for an application without business routes, such as the
+// workers. Readiness checks come from the "readiness" group.
 var HealthModule = fx.Module("healthserver",
 	fx.Provide(
-		fx.Annotate(NewHealthHandler, fx.ParamTags(`group:"readiness"`)),
+		fx.Annotate(NewHealthHandler, fx.ParamTags(`group:"readiness"`, `group:"public_routes"`)),
 		NewServer,
 	),
 	fx.Invoke(registerLifecycle),
 )
 
-// NewHealthHandler builds a handler serving only liveness and readiness. Any
-// other path answers 404, because there is nothing else to serve.
-func NewHealthHandler(checks []HealthCheck, logger *slog.Logger) http.Handler {
+// NewHealthHandler builds a handler serving liveness, readiness and the public
+// routes, such as the metrics endpoint. Any other path answers 404, because
+// there is nothing else to serve.
+func NewHealthHandler(
+	checks []HealthCheck,
+	publicRoutes []Route,
+	metrics RequestRecorder,
+	logger *slog.Logger,
+) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", handleLive)
 	mux.Handle("GET /health/ready", readinessHandler(checks, logger))
-	return withCorrelationID(withRequestTimeout(mux))
+	for _, route := range publicRoutes {
+		route.Register(mux)
+	}
+	return withCorrelationID(withRequestTimeout(withRequestObservation(logger, metrics, mux)))
 }
 
 // NewHandler builds the root handler. Health endpoints and public routes are
@@ -71,6 +80,7 @@ func NewHandler(
 	routes []Route,
 	checks []HealthCheck,
 	verifier TokenVerifier,
+	metrics RequestRecorder,
 	logger *slog.Logger,
 ) http.Handler {
 	protected := http.NewServeMux()
@@ -85,7 +95,7 @@ func NewHandler(
 		route.Register(mux)
 	}
 	mux.Handle("/", requireAuthentication(verifier, protected))
-	return withCorrelationID(withRequestTimeout(mux))
+	return withCorrelationID(withRequestTimeout(withRequestObservation(logger, metrics, mux)))
 }
 
 // NewServer builds the HTTP server. The timeouts bound how long a slow client

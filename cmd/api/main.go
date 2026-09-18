@@ -16,6 +16,8 @@ import (
 	"github.com/davibanfi/betledger/internal/infrastructure/auth"
 	"github.com/davibanfi/betledger/internal/infrastructure/config"
 	"github.com/davibanfi/betledger/internal/infrastructure/httpserver"
+	"github.com/davibanfi/betledger/internal/infrastructure/logging"
+	"github.com/davibanfi/betledger/internal/infrastructure/metrics"
 	"github.com/davibanfi/betledger/internal/infrastructure/postgres"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
@@ -37,19 +39,28 @@ func options() fx.Option {
 			usecase.NewReadWallet,
 			usecase.NewReadTransaction,
 			fx.Annotate(auth.NewTokenVerifier, fx.As(new(httpserver.TokenVerifier))),
+			newRequestRecorder,
+			fx.Annotate(metrics.NewRoute, fx.As(new(httpserver.Route)), fx.ResultTags(`group:"public_routes"`)),
 			fx.Annotate(newPostgresHealthCheck, fx.ResultTags(`group:"readiness"`)),
 		),
+		metrics.Module,
 		postgres.Module,
 		httpserver.Module,
 	)
 }
 
 func newLogger() *slog.Logger {
-	return slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	return logging.New(os.Stdout)
 }
 
 func newClock() usecase.Clock {
 	return time.Now
+}
+
+// newRequestRecorder hands the server the part of the recorder it uses, which
+// keeps the metrics of the requests out of the routes and the handlers.
+func newRequestRecorder(recorder *metrics.Recorder) httpserver.RequestRecorder {
+	return recorder
 }
 
 func newPostgresHealthCheck(pool *pgxpool.Pool) httpserver.HealthCheck {

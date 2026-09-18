@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/davibanfi/betledger/internal/domain"
@@ -469,4 +471,36 @@ func (fakeInbox) Record(ctx context.Context, message usecase.InboxMessage) error
 	}
 	tx.staged.inbox[message.MessageID] = message
 	return nil
+}
+
+// fakeMetrics keeps what was reported as one line per call, so that a table
+// states in a string what the use case observed.
+type fakeMetrics struct{ calls []string }
+
+func (m *fakeMetrics) WagerConcluded(_ context.Context, outcome usecase.WagerOutcome) {
+	m.record("wager", outcome.Kind.String(), outcome.State.String(), strconv.FormatBool(outcome.Replay))
+}
+
+func (m *fakeMetrics) MessageTaken(_ context.Context, duplicate bool) {
+	m.record("message", strconv.FormatBool(duplicate))
+}
+
+func (m *fakeMetrics) ReferenceAttempted(_ context.Context, state wager.State) {
+	m.record("reference", state.String())
+}
+
+func (m *fakeMetrics) EventPublished(_ context.Context, _ time.Duration, published bool) {
+	m.record("publication", strconv.FormatBool(published))
+}
+
+func (m *fakeMetrics) ReconciliationChecked(_ context.Context, consistent bool) {
+	m.record("reconciliation", strconv.FormatBool(consistent))
+}
+
+func (m *fakeMetrics) ConcurrencyConflict(context.Context) {
+	m.record("conflict")
+}
+
+func (m *fakeMetrics) record(parts ...string) {
+	m.calls = append(m.calls, strings.Join(parts, " "))
 }

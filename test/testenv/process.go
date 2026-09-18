@@ -159,6 +159,13 @@ func (w *Workers) Ready(t *testing.T) int {
 	return response.StatusCode
 }
 
+// Scrape returns the body of the metrics endpoint of the workers.
+func (w *Workers) Scrape(t *testing.T) string {
+	t.Helper()
+
+	return scrape(t, w.BaseURL)
+}
+
 // Stop sends SIGTERM and waits for the process, as an orchestrator would.
 func (w *Workers) Stop(t *testing.T) {
 	t.Helper()

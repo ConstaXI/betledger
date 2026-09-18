@@ -321,8 +321,9 @@ não bloqueia quem está apostando.
   identificador existe.
 - **Reconciliação numa consulta só.** O saldo armazenado e o reconstruído pelo
   ledger vêm do mesmo `SELECT`, então não há janela entre as duas leituras. A
-  reconciliação **não corrige** nada: ela reporta `difference` e `consistent`, e
-  registra divergência no log como erro. Corrigir exigiria novo lançamento no
+  reconciliação **não corrige** nada: ela reporta `difference` e `consistent`,
+  registra divergência no log como erro e conta a checagem numa métrica, com
+  `consistent` como rótulo. Corrigir exigiria novo lançamento no
   ledger, que é append-only, e essa decisão é do operador.
 
 ## Composição e shutdown
@@ -374,6 +375,57 @@ Sem ele, uma requisição feita com o banco travado ficava pendurada
 indefinidamente; com ele, o prazo expirado aborta a operação pendente e a
 resposta é `503`, que o cliente pode repetir com segurança graças à idempotência.
 
+## Observabilidade
+
+**Implementado.** Logs JSON com `log/slog` e métricas pela API de métricas do
+OpenTelemetry, exportadas no formato Prometheus em `/metrics`.
+
+- **O `correlationId` viaja no contexto, não nos argumentos.** O middleware de
+  HTTP o guarda no contexto e o consumidor guarda o `messageId` do envelope — que
+  é o mesmo valor que vai no envelope do evento. Um `slog.Handler` próprio
+  carimba toda linha logada com contexto, então o campo é decidido num lugar só e
+  nenhum ponto de chamada o repete. Continua sendo leitura de negócio também: é
+  ele que o caso de uso grava no evento.
+- **OpenTelemetry na frente do Prometheus.** O código instrumentado fala com a
+  API do OpenTelemetry e o exporter converte para o formato Prometheus. Custa um
+  `MeterProvider` a mais do que usar o cliente do Prometheus direto, e em troca o
+  tracing — diferencial opcional da spec — entra pelo mesmo caminho, sem reescrever
+  instrumento nenhum. O registry é o da aplicação, não o global, então nada chega
+  ao endpoint sem passar pelo pacote `metrics`.
+- **A porta `Metrics` fica no caso de uso.** Desfecho por status, duplicata,
+  tentativa de referência, publicação e divergência são decisões do caso de uso,
+  e ele as reporta por uma porta, como já reporta persistência. Assim o
+  `usecase` não importa OpenTelemetry e os testes afirmam o que foi medido com um
+  fake, na mesma tabela que afirma o resultado. O `Recorder` da infraestrutura
+  implementa essa porta e acrescenta o que só os adaptadores veem: latência e
+  status das requisições, e mensagens enviadas para a DLQ.
+- **Rótulo é dimensão, não identificador.** Nenhuma métrica carrega `walletId`,
+  `transactionId` ou `providerId`: uma série por carteira inviabilizaria o
+  armazenamento. A latência HTTP é rotulada pela **rota que casou**
+  (`POST /wagering/transactions`), nunca pelo path, que carrega UUID. Como as
+  rotas protegidas são resolvidas por um roteador aninhado atrás da
+  autenticação, e carregar o autenticado exige uma cópia da requisição, o
+  middleware de autenticação devolve para a requisição de fora o pattern que o
+  roteador interno casou.
+- **Histogramas em segundos, com buckets declarados.** Os buckets default do
+  OpenTelemetry crescem em milhares, o que jogaria toda medição em segundos no
+  primeiro bucket. Latência usa a escala de 5ms a 10s, e o atraso da outbox vai
+  até 300s, porque o backoff de uma publicação que falha é da ordem de minutos.
+- **Atraso da outbox medido no publisher.** O lease dos eventos passou a devolver
+  o `occurred_at`, e o publisher registra a diferença até o instante da
+  publicação. A alternativa, uma gauge com a idade do registro pendente mais
+  antigo, exigiria uma consulta ao banco a cada scrape.
+- **`/metrics` é público, como os health checks.** Um scraper não carrega token,
+  e o que ele lê são contadores e histogramas — sem identificador, saldo ou
+  payload. É rota pública, mas não é rota de negócio: continua valendo que toda
+  rota de negócio exige token e papel.
+- **O que nunca é logado.** Credenciais, tokens e payloads financeiros completos.
+  Valor monetário não aparece em log de operação; a única exceção é a
+  `difference` de uma reconciliação divergente, que é o dado que o operador
+  precisa para investigar. Os health checks e o `/metrics` não entram no log de
+  requisições: são sondados a cada poucos segundos e soterrariam as requisições
+  que carregam trabalho.
+
 ## Interpretações adotadas
 
 - `WIN` aceita referência opcional a uma aposta da mesma rodada; `BET` e `LOSS`
@@ -388,4 +440,5 @@ resposta é `503`, que o cliente pode repetir com segurança graças à idempot�
 
 ## Trabalho não concluído
 
-- **Reconciliação** e **observabilidade** além dos logs JSON.
+- **Tracing com OpenTelemetry** e **dashboards**, que a seção 12 da spec marca
+  como diferenciais opcionais.

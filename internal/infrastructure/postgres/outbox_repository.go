@@ -76,6 +76,7 @@ func (r *OutboxRepository) LeasePending(
 			EventID:     row.ID,
 			AggregateID: row.AggregateID,
 			EventType:   row.EventType,
+			OccurredAt:  row.OccurredAt,
 			Payload:     row.Payload,
 			Attempts:    int(row.Attempts),
 		})

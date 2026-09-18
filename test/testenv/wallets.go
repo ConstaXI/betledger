@@ -17,6 +17,7 @@ import (
 	"github.com/davibanfi/betledger/internal/domain/wallet"
 	"github.com/davibanfi/betledger/internal/infrastructure/config"
 	"github.com/davibanfi/betledger/internal/infrastructure/messaging"
+	"github.com/davibanfi/betledger/internal/infrastructure/metrics"
 	"github.com/davibanfi/betledger/internal/infrastructure/postgres"
 	"github.com/davibanfi/betledger/internal/usecase"
 )
@@ -45,8 +46,24 @@ func (p *Postgres) NewUseCases() UseCases {
 			postgres.NewLedgerRepository(),
 			postgres.NewOutboxRepository(),
 			time.Now,
+			NewRecorder(),
 		),
 	}
+}
+
+// NewRecorder builds the recorder the applications record through, so that the
+// use cases driven from the tests report to the real instruments.
+func NewRecorder() *metrics.Recorder {
+	registry := metrics.NewRegistry()
+	provider, err := metrics.NewMeterProvider(registry)
+	if err != nil {
+		panic(err)
+	}
+	recorder, err := metrics.NewRecorder(provider)
+	if err != nil {
+		panic(err)
+	}
+	return recorder
 }
 
 // NewResolver wires the use case that retries operations waiting for a
@@ -60,6 +77,7 @@ func (p *Postgres) NewResolver(policy usecase.ReferenceRetryPolicy) *usecase.Res
 		postgres.NewOutboxRepository(),
 		time.Now,
 		policy,
+		NewRecorder(),
 	)
 }
 
@@ -318,7 +336,7 @@ func (p *Postgres) NewPublisher(
 	publisher := messaging.NewEventPublisher(lc, broker.Client, config.Config{EventsQueueName: queueName})
 	lc.RequireStart()
 	return usecase.NewPublishOutbox(postgres.NewTransactor(p.Pool), postgres.NewOutboxRepository(), publisher,
-		time.Now, policy)
+		time.Now, policy, NewRecorder())
 }
 
 // OutboxEvent is a stored outbox event.
