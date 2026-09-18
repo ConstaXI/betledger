@@ -556,15 +556,3 @@ A regra que orienta a organização: as dependências apontam para dentro.
 `internal/domain` não importa nada; `internal/usecase` importa só o domínio; e
 tudo que fala com o mundo externo fica em `internal/infrastructure`,
 implementando as portas dos casos de uso.
-
-## Próximos passos
-
-Tudo que a [SPECS.md](SPECS.md) exige está implementado. O que resta são os
-diferenciais que ela marca como opcionais na seção 12:
-
-1. Tracing com OpenTelemetry. As métricas já usam a API do OpenTelemetry, então
-   o tracing entra pelo mesmo caminho: um `TracerProvider` no `metrics.Module`,
-   ou num módulo irmão, e a instrumentação do servidor HTTP, do cliente SQS e do
-   pool do PostgreSQL.
-2. Dashboards e alertas sobre as métricas expostas, com um Prometheus e um
-   Grafana no Compose.
