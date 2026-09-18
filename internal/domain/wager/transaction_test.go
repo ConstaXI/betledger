@@ -3,6 +3,7 @@ package wager_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -127,6 +128,10 @@ func TestNewExternalTransaction(t *testing.T) {
 			name: "should return INVALID_INPUT when playerId is nil", kind: wager.KindBet, amount: "25.00",
 			mutate: func(p *wager.NewExternalParams) { p.PlayerID = domain.NilID }, wantErr: domain.FailureCodeInvalidInput,
 		},
+		{
+			name: "should return INVALID_INPUT when createdAt is missing", kind: wager.KindBet, amount: "25.00",
+			mutate: func(p *wager.NewExternalParams) { p.CreatedAt = time.Time{} }, wantErr: domain.FailureCodeInvalidInput,
+		},
 	}
 
 	for _, test := range tests {
@@ -159,6 +164,7 @@ func TestNewOpening(t *testing.T) {
 		walletID       domain.ID
 		playerID       domain.ID
 		initialBalance money.Money
+		createdAt      time.Time
 		wantResult     *wager.Transaction
 		wantErr        error
 	}{
@@ -168,6 +174,7 @@ func TestNewOpening(t *testing.T) {
 			walletID:       walletID,
 			playerID:       playerID,
 			initialBalance: initial,
+			createdAt:      domaintest.FixedNow,
 			wantResult: domaintest.MustRehydrateTransaction(t, wager.RehydrateParams{
 				ID:            id,
 				Kind:          wager.KindOpening,
@@ -184,6 +191,7 @@ func TestNewOpening(t *testing.T) {
 			walletID:       walletID,
 			playerID:       playerID,
 			initialBalance: domaintest.MustParseMoney(t, "0.00", "BRL"),
+			createdAt:      domaintest.FixedNow,
 			wantErr:        domain.FailureCodeInvalidAmount,
 		},
 		{
@@ -192,6 +200,7 @@ func TestNewOpening(t *testing.T) {
 			walletID:       walletID,
 			playerID:       playerID,
 			initialBalance: initial,
+			createdAt:      domaintest.FixedNow,
 			wantErr:        domain.FailureCodeInvalidInput,
 		},
 		{
@@ -200,6 +209,7 @@ func TestNewOpening(t *testing.T) {
 			walletID:       domain.NilID,
 			playerID:       playerID,
 			initialBalance: initial,
+			createdAt:      domaintest.FixedNow,
 			wantErr:        domain.FailureCodeInvalidInput,
 		},
 		{
@@ -207,6 +217,15 @@ func TestNewOpening(t *testing.T) {
 			id:             id,
 			walletID:       walletID,
 			playerID:       domain.NilID,
+			initialBalance: initial,
+			createdAt:      domaintest.FixedNow,
+			wantErr:        domain.FailureCodeInvalidInput,
+		},
+		{
+			name:           "should return INVALID_INPUT when createdAt is missing",
+			id:             id,
+			walletID:       walletID,
+			playerID:       playerID,
 			initialBalance: initial,
 			wantErr:        domain.FailureCodeInvalidInput,
 		},
@@ -216,7 +235,7 @@ func TestNewOpening(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := wager.NewOpening(test.id, test.walletID, test.playerID, test.initialBalance)
+			got, err := wager.NewOpening(test.id, test.walletID, test.playerID, test.initialBalance, test.createdAt)
 
 			assert.ErrorIs(t, err, test.wantErr)
 			assert.Equal(t, test.wantResult, got)
@@ -227,75 +246,102 @@ func TestNewOpening(t *testing.T) {
 func TestTransactionMarkProcessed(t *testing.T) {
 	t.Parallel()
 
+	later := domaintest.FixedNow.Add(time.Minute)
+
 	pending := func(*wager.Transaction) error { return nil }
 	processed := func(transaction *wager.Transaction) error {
-		return transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"))
+		return transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"), domaintest.FixedNow)
 	}
 	rejected := func(transaction *wager.Transaction) error {
-		return transaction.MarkRejected(domain.FailureCodeInsufficientFunds)
+		return transaction.MarkRejected(domain.FailureCodeInsufficientFunds, domaintest.FixedNow)
 	}
-	waiting := func(transaction *wager.Transaction) error { return transaction.MarkPendingReference() }
+	waiting := func(transaction *wager.Transaction) error {
+		return transaction.MarkPendingReference(domaintest.FixedNow)
+	}
 
 	tests := []struct {
 		name              string
 		kind              wager.Kind
 		prepare           func(transaction *wager.Transaction) error
 		balance           money.Money
+		at                time.Time
 		wantErr           error
 		wantState         wager.State
 		wantResultBalance money.Money
 		wantHasBalance    bool
+		wantUpdatedAt     time.Time
 	}{
 		{
 			name:              "should accept when the operation is pending",
 			kind:              wager.KindBet,
 			prepare:           pending,
 			balance:           domaintest.MustParseMoney(t, "50.00", "BRL"),
+			at:                later,
 			wantState:         wager.StateProcessed,
 			wantResultBalance: domaintest.MustParseMoney(t, "50.00", "BRL"),
 			wantHasBalance:    true,
+			wantUpdatedAt:     later,
 		},
 		{
 			name:              "should accept when the operation waited for its reference",
 			kind:              wager.KindRefund,
 			prepare:           waiting,
 			balance:           domaintest.MustParseMoney(t, "125.00", "BRL"),
+			at:                later,
 			wantState:         wager.StateProcessed,
 			wantResultBalance: domaintest.MustParseMoney(t, "125.00", "BRL"),
 			wantHasBalance:    true,
+			wantUpdatedAt:     later,
 		},
 		{
 			name:              "should return INVALID_STATE_TRANSITION when the operation was already processed",
 			kind:              wager.KindBet,
 			prepare:           processed,
 			balance:           domaintest.MustParseMoney(t, "10.00", "BRL"),
+			at:                later,
 			wantErr:           domain.FailureCodeInvalidStateTransition,
 			wantState:         wager.StateProcessed,
 			wantResultBalance: domaintest.MustParseMoney(t, "75.00", "BRL"),
 			wantHasBalance:    true,
+			wantUpdatedAt:     domaintest.FixedNow,
 		},
 		{
-			name:      "should return INVALID_STATE_TRANSITION when the operation was rejected",
-			kind:      wager.KindBet,
-			prepare:   rejected,
-			balance:   domaintest.MustParseMoney(t, "10.00", "BRL"),
-			wantErr:   domain.FailureCodeInvalidStateTransition,
-			wantState: wager.StateRejected,
+			name:          "should return INVALID_STATE_TRANSITION when the operation was rejected",
+			kind:          wager.KindBet,
+			prepare:       rejected,
+			balance:       domaintest.MustParseMoney(t, "10.00", "BRL"),
+			at:            later,
+			wantErr:       domain.FailureCodeInvalidStateTransition,
+			wantState:     wager.StateRejected,
+			wantUpdatedAt: domaintest.FixedNow,
 		},
 		{
-			name:      "should return CURRENCY_MISMATCH when the balance is in another currency",
-			kind:      wager.KindBet,
-			prepare:   pending,
-			balance:   domaintest.MustParseMoney(t, "50.00", "USD"),
-			wantErr:   domain.FailureCodeCurrencyMismatch,
-			wantState: wager.StatePending,
+			name:          "should return CURRENCY_MISMATCH when the balance is in another currency",
+			kind:          wager.KindBet,
+			prepare:       pending,
+			balance:       domaintest.MustParseMoney(t, "50.00", "USD"),
+			at:            later,
+			wantErr:       domain.FailureCodeCurrencyMismatch,
+			wantState:     wager.StatePending,
+			wantUpdatedAt: domaintest.FixedNow,
 		},
 		{
-			name:      "should return INVALID_INPUT when the balance is uninitialized",
-			kind:      wager.KindBet,
-			prepare:   pending,
-			wantErr:   domain.FailureCodeInvalidInput,
-			wantState: wager.StatePending,
+			name:          "should return INVALID_INPUT when the balance is uninitialized",
+			kind:          wager.KindBet,
+			prepare:       pending,
+			at:            later,
+			wantErr:       domain.FailureCodeInvalidInput,
+			wantState:     wager.StatePending,
+			wantUpdatedAt: domaintest.FixedNow,
+		},
+		{
+			name:          "should return INVALID_INPUT when the instant is missing",
+			kind:          wager.KindBet,
+			prepare:       pending,
+			balance:       domaintest.MustParseMoney(t, "50.00", "BRL"),
+			wantErr:       domain.FailureCodeInvalidInput,
+			wantState:     wager.StatePending,
+			wantUpdatedAt: domaintest.FixedNow,
 		},
 	}
 
@@ -306,10 +352,11 @@ func TestTransactionMarkProcessed(t *testing.T) {
 			transaction := domaintest.MustExternalTransaction(t, test.kind, "25.00")
 			require.NoError(t, test.prepare(transaction))
 
-			err := transaction.MarkProcessed(test.balance)
+			err := transaction.MarkProcessed(test.balance, test.at)
 
 			balance, hasBalance := transaction.ResultBalance()
 			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantUpdatedAt, transaction.UpdatedAt())
 			assert.Equal(t, test.wantState, transaction.State())
 			assert.Equal(t, test.wantResultBalance, balance)
 			assert.Equal(t, test.wantHasBalance, hasBalance)
@@ -320,51 +367,74 @@ func TestTransactionMarkProcessed(t *testing.T) {
 func TestTransactionMarkRejected(t *testing.T) {
 	t.Parallel()
 
+	later := domaintest.FixedNow.Add(time.Minute)
+
 	pending := func(*wager.Transaction) error { return nil }
 	processed := func(transaction *wager.Transaction) error {
-		return transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"))
+		return transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"), domaintest.FixedNow)
 	}
-	waiting := func(transaction *wager.Transaction) error { return transaction.MarkPendingReference() }
+	waiting := func(transaction *wager.Transaction) error {
+		return transaction.MarkPendingReference(domaintest.FixedNow)
+	}
 
 	tests := []struct {
 		name            string
 		kind            wager.Kind
 		prepare         func(transaction *wager.Transaction) error
 		code            domain.FailureCode
+		at              time.Time
 		wantErr         error
 		wantState       wager.State
 		wantFailureCode domain.FailureCode
+		wantUpdatedAt   time.Time
 	}{
 		{
 			name:            "should accept when the operation is pending",
 			kind:            wager.KindBet,
 			prepare:         pending,
 			code:            domain.FailureCodeInsufficientFunds,
+			at:              later,
 			wantState:       wager.StateRejected,
 			wantFailureCode: domain.FailureCodeInsufficientFunds,
+			wantUpdatedAt:   later,
 		},
 		{
 			name:            "should accept when the operation waited for its reference",
 			kind:            wager.KindRefund,
 			prepare:         waiting,
 			code:            domain.FailureCodeReferenceNotFound,
+			at:              later,
 			wantState:       wager.StateRejected,
 			wantFailureCode: domain.FailureCodeReferenceNotFound,
+			wantUpdatedAt:   later,
 		},
 		{
-			name:      "should return INVALID_INPUT when the failure code is empty",
-			kind:      wager.KindBet,
-			prepare:   pending,
-			wantErr:   domain.FailureCodeInvalidInput,
-			wantState: wager.StatePending,
+			name:          "should return INVALID_INPUT when the failure code is empty",
+			kind:          wager.KindBet,
+			prepare:       pending,
+			at:            later,
+			wantErr:       domain.FailureCodeInvalidInput,
+			wantState:     wager.StatePending,
+			wantUpdatedAt: domaintest.FixedNow,
 		},
 		{
-			name:      "should return INVALID_STATE_TRANSITION when the operation was already processed",
-			kind:      wager.KindBet,
-			prepare:   processed,
-			code:      domain.FailureCodeInsufficientFunds,
-			wantErr:   domain.FailureCodeInvalidStateTransition,
-			wantState: wager.StateProcessed,
+			name:          "should return INVALID_STATE_TRANSITION when the operation was already processed",
+			kind:          wager.KindBet,
+			prepare:       processed,
+			code:          domain.FailureCodeInsufficientFunds,
+			at:            later,
+			wantErr:       domain.FailureCodeInvalidStateTransition,
+			wantState:     wager.StateProcessed,
+			wantUpdatedAt: domaintest.FixedNow,
+		},
+		{
+			name:          "should return INVALID_INPUT when the instant is missing",
+			kind:          wager.KindBet,
+			prepare:       pending,
+			code:          domain.FailureCodeInsufficientFunds,
+			wantErr:       domain.FailureCodeInvalidInput,
+			wantState:     wager.StatePending,
+			wantUpdatedAt: domaintest.FixedNow,
 		},
 	}
 
@@ -375,9 +445,10 @@ func TestTransactionMarkRejected(t *testing.T) {
 			transaction := domaintest.MustExternalTransaction(t, test.kind, "25.00")
 			require.NoError(t, test.prepare(transaction))
 
-			err := transaction.MarkRejected(test.code)
+			err := transaction.MarkRejected(test.code, test.at)
 
 			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantUpdatedAt, transaction.UpdatedAt())
 			assert.Equal(t, test.wantState, transaction.State())
 			assert.Equal(t, test.wantFailureCode, transaction.FailureCode())
 		})
@@ -387,39 +458,57 @@ func TestTransactionMarkRejected(t *testing.T) {
 func TestTransactionMarkFailed(t *testing.T) {
 	t.Parallel()
 
+	later := domaintest.FixedNow.Add(time.Minute)
+
 	pending := func(*wager.Transaction) error { return nil }
 	rejected := func(transaction *wager.Transaction) error {
-		return transaction.MarkRejected(domain.FailureCodeInsufficientFunds)
+		return transaction.MarkRejected(domain.FailureCodeInsufficientFunds, domaintest.FixedNow)
 	}
 
 	tests := []struct {
 		name            string
 		prepare         func(transaction *wager.Transaction) error
 		code            domain.FailureCode
+		at              time.Time
 		wantErr         error
 		wantState       wager.State
 		wantFailureCode domain.FailureCode
+		wantUpdatedAt   time.Time
 	}{
 		{
 			name:            "should accept when the operation is pending",
 			prepare:         pending,
 			code:            domain.FailureCodeReferenceNotFound,
+			at:              later,
 			wantState:       wager.StateFailed,
 			wantFailureCode: domain.FailureCodeReferenceNotFound,
+			wantUpdatedAt:   later,
 		},
 		{
-			name:      "should return INVALID_INPUT when the failure code is empty",
-			prepare:   pending,
-			wantErr:   domain.FailureCodeInvalidInput,
-			wantState: wager.StatePending,
+			name:          "should return INVALID_INPUT when the failure code is empty",
+			prepare:       pending,
+			at:            later,
+			wantErr:       domain.FailureCodeInvalidInput,
+			wantState:     wager.StatePending,
+			wantUpdatedAt: domaintest.FixedNow,
 		},
 		{
 			name:            "should return INVALID_STATE_TRANSITION when the operation was rejected",
 			prepare:         rejected,
 			code:            domain.FailureCodeReferenceNotFound,
+			at:              later,
 			wantErr:         domain.FailureCodeInvalidStateTransition,
 			wantState:       wager.StateRejected,
 			wantFailureCode: domain.FailureCodeInsufficientFunds,
+			wantUpdatedAt:   domaintest.FixedNow,
+		},
+		{
+			name:          "should return INVALID_INPUT when the instant is missing",
+			prepare:       pending,
+			code:          domain.FailureCodeReferenceNotFound,
+			wantErr:       domain.FailureCodeInvalidInput,
+			wantState:     wager.StatePending,
+			wantUpdatedAt: domaintest.FixedNow,
 		},
 	}
 
@@ -430,9 +519,10 @@ func TestTransactionMarkFailed(t *testing.T) {
 			transaction := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
 			require.NoError(t, test.prepare(transaction))
 
-			err := transaction.MarkFailed(test.code)
+			err := transaction.MarkFailed(test.code, test.at)
 
 			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantUpdatedAt, transaction.UpdatedAt())
 			assert.Equal(t, test.wantState, transaction.State())
 			assert.Equal(t, test.wantFailureCode, transaction.FailureCode())
 		})
@@ -442,37 +532,55 @@ func TestTransactionMarkFailed(t *testing.T) {
 func TestTransactionMarkPendingReference(t *testing.T) {
 	t.Parallel()
 
+	later := domaintest.FixedNow.Add(time.Minute)
+
 	pending := func(*wager.Transaction) error { return nil }
 	processed := func(transaction *wager.Transaction) error {
-		return transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"))
+		return transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"), domaintest.FixedNow)
 	}
 
 	tests := []struct {
-		name      string
-		kind      wager.Kind
-		prepare   func(transaction *wager.Transaction) error
-		wantErr   error
-		wantState wager.State
+		name          string
+		kind          wager.Kind
+		prepare       func(transaction *wager.Transaction) error
+		at            time.Time
+		wantErr       error
+		wantState     wager.State
+		wantUpdatedAt time.Time
 	}{
 		{
-			name:      "should accept when a pending reversal waits for its reference",
-			kind:      wager.KindRefund,
-			prepare:   pending,
-			wantState: wager.StatePendingReference,
+			name:          "should accept when a pending reversal waits for its reference",
+			kind:          wager.KindRefund,
+			prepare:       pending,
+			at:            later,
+			wantState:     wager.StatePendingReference,
+			wantUpdatedAt: later,
 		},
 		{
-			name:      "should return INVALID_STATE_TRANSITION when the operation refers to nothing",
-			kind:      wager.KindBet,
-			prepare:   pending,
-			wantErr:   domain.FailureCodeInvalidStateTransition,
-			wantState: wager.StatePending,
+			name:          "should return INVALID_STATE_TRANSITION when the operation refers to nothing",
+			kind:          wager.KindBet,
+			prepare:       pending,
+			at:            later,
+			wantErr:       domain.FailureCodeInvalidStateTransition,
+			wantState:     wager.StatePending,
+			wantUpdatedAt: domaintest.FixedNow,
 		},
 		{
-			name:      "should return INVALID_STATE_TRANSITION when the reversal was already processed",
-			kind:      wager.KindRefund,
-			prepare:   processed,
-			wantErr:   domain.FailureCodeInvalidStateTransition,
-			wantState: wager.StateProcessed,
+			name:          "should return INVALID_STATE_TRANSITION when the reversal was already processed",
+			kind:          wager.KindRefund,
+			prepare:       processed,
+			at:            later,
+			wantErr:       domain.FailureCodeInvalidStateTransition,
+			wantState:     wager.StateProcessed,
+			wantUpdatedAt: domaintest.FixedNow,
+		},
+		{
+			name:          "should return INVALID_INPUT when the instant is missing",
+			kind:          wager.KindRefund,
+			prepare:       pending,
+			wantErr:       domain.FailureCodeInvalidInput,
+			wantState:     wager.StatePending,
+			wantUpdatedAt: domaintest.FixedNow,
 		},
 	}
 
@@ -483,9 +591,10 @@ func TestTransactionMarkPendingReference(t *testing.T) {
 			transaction := domaintest.MustExternalTransaction(t, test.kind, "25.00")
 			require.NoError(t, test.prepare(transaction))
 
-			err := transaction.MarkPendingReference()
+			err := transaction.MarkPendingReference(test.at)
 
 			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantUpdatedAt, transaction.UpdatedAt())
 			assert.Equal(t, test.wantState, transaction.State())
 		})
 	}
@@ -554,10 +663,10 @@ func TestTransactionResolveReference(t *testing.T) {
 
 	base := domaintest.ValidExternalParams(t, wager.KindBet, "25.00")
 	processed := func(reference *wager.Transaction) error {
-		return reference.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"))
+		return reference.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"), domaintest.FixedNow)
 	}
 	rejected := func(reference *wager.Transaction) error {
-		return reference.MarkRejected(domain.FailureCodeInsufficientFunds)
+		return reference.MarkRejected(domain.FailureCodeInsufficientFunds, domaintest.FixedNow)
 	}
 	pending := func(*wager.Transaction) error { return nil }
 	unchanged := func(*wager.NewExternalParams) {}
@@ -711,7 +820,7 @@ func TestTransactionResolveReference(t *testing.T) {
 				params.Money = domaintest.MustParseMoney(t, "25.00", "USD")
 			},
 			conclude: func(reference *wager.Transaction) error {
-				return reference.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "USD"))
+				return reference.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "USD"), domaintest.FixedNow)
 			},
 			wantErr:      domain.FailureCodeReferenceMismatch,
 			wantRejected: true,
@@ -786,13 +895,17 @@ func TestTransactionResolveReference(t *testing.T) {
 func TestTransactionRecordMissingReference(t *testing.T) {
 	t.Parallel()
 
+	later := domaintest.FixedNow.Add(time.Minute)
+
 	pending := func(*wager.Transaction) error { return nil }
-	waiting := func(transaction *wager.Transaction) error { return transaction.MarkPendingReference() }
+	waiting := func(transaction *wager.Transaction) error {
+		return transaction.MarkPendingReference(domaintest.FixedNow)
+	}
 	waitedTwice := func(transaction *wager.Transaction) error {
 		return errors.Join(
-			transaction.MarkPendingReference(),
-			transaction.RecordMissingReference(8),
-			transaction.RecordMissingReference(8),
+			transaction.MarkPendingReference(domaintest.FixedNow),
+			transaction.RecordMissingReference(8, domaintest.FixedNow),
+			transaction.RecordMissingReference(8, domaintest.FixedNow),
 		)
 	}
 
@@ -800,47 +913,67 @@ func TestTransactionRecordMissingReference(t *testing.T) {
 		name            string
 		prepare         func(transaction *wager.Transaction) error
 		maxAttempts     int
+		at              time.Time
 		wantErr         error
 		wantState       wager.State
 		wantFailureCode domain.FailureCode
 		wantAttempts    int
+		wantUpdatedAt   time.Time
 	}{
 		{
-			name:         "should accept when attempts remain, keeping the operation waiting",
-			prepare:      waiting,
-			maxAttempts:  3,
-			wantState:    wager.StatePendingReference,
-			wantAttempts: 1,
+			name:          "should accept when attempts remain, keeping the operation waiting",
+			prepare:       waiting,
+			maxAttempts:   3,
+			at:            later,
+			wantState:     wager.StatePendingReference,
+			wantAttempts:  1,
+			wantUpdatedAt: later,
 		},
 		{
 			name:            "should report REFERENCE_NOT_FOUND when the last attempt is spent",
 			prepare:         waitedTwice,
 			maxAttempts:     3,
+			at:              later,
 			wantState:       wager.StateRejected,
 			wantFailureCode: domain.FailureCodeReferenceNotFound,
 			wantAttempts:    3,
+			wantUpdatedAt:   later,
 		},
 		{
 			name:            "should report REFERENCE_NOT_FOUND when a single attempt is allowed",
 			prepare:         waiting,
 			maxAttempts:     1,
+			at:              later,
 			wantState:       wager.StateRejected,
 			wantFailureCode: domain.FailureCodeReferenceNotFound,
 			wantAttempts:    1,
+			wantUpdatedAt:   later,
 		},
 		{
-			name:        "should return INVALID_STATE_TRANSITION when the operation is not waiting",
-			prepare:     pending,
-			maxAttempts: 3,
-			wantErr:     domain.FailureCodeInvalidStateTransition,
-			wantState:   wager.StatePending,
+			name:          "should return INVALID_STATE_TRANSITION when the operation is not waiting",
+			prepare:       pending,
+			maxAttempts:   3,
+			at:            later,
+			wantErr:       domain.FailureCodeInvalidStateTransition,
+			wantState:     wager.StatePending,
+			wantUpdatedAt: domaintest.FixedNow,
 		},
 		{
-			name:        "should return INVALID_INPUT when no attempt is allowed",
-			prepare:     waiting,
-			maxAttempts: 0,
-			wantErr:     domain.FailureCodeInvalidInput,
-			wantState:   wager.StatePendingReference,
+			name:          "should return INVALID_INPUT when no attempt is allowed",
+			prepare:       waiting,
+			maxAttempts:   0,
+			at:            later,
+			wantErr:       domain.FailureCodeInvalidInput,
+			wantState:     wager.StatePendingReference,
+			wantUpdatedAt: domaintest.FixedNow,
+		},
+		{
+			name:          "should return INVALID_INPUT when the instant is missing",
+			prepare:       waiting,
+			maxAttempts:   3,
+			wantErr:       domain.FailureCodeInvalidInput,
+			wantState:     wager.StatePendingReference,
+			wantUpdatedAt: domaintest.FixedNow,
 		},
 	}
 
@@ -851,9 +984,10 @@ func TestTransactionRecordMissingReference(t *testing.T) {
 			transaction := domaintest.MustExternalTransaction(t, wager.KindRefund, "25.00")
 			require.NoError(t, test.prepare(transaction))
 
-			err := transaction.RecordMissingReference(test.maxAttempts)
+			err := transaction.RecordMissingReference(test.maxAttempts, test.at)
 
 			assert.ErrorIs(t, err, test.wantErr)
+			assert.Equal(t, test.wantUpdatedAt, transaction.UpdatedAt())
 			assert.Equal(t, test.wantState, transaction.State())
 			assert.Equal(t, test.wantFailureCode, transaction.FailureCode())
 			assert.Equal(t, test.wantAttempts, transaction.ReferenceAttempts())

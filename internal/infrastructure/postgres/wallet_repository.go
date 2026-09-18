@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -38,6 +39,8 @@ func (r *WalletRepository) Create(ctx context.Context, w *wallet.Wallet) error {
 		Currency:     w.Currency().String(),
 		BalanceMinor: w.Balance().MinorUnits(),
 		Version:      w.Version(),
+		CreatedAt:    w.CreatedAt(),
+		UpdatedAt:    w.UpdatedAt(),
 	})
 	if isUniqueViolation(err, walletsPlayerCurrencyKey) {
 		return domain.ConflictError(domain.FailureCodeWalletAlreadyExists,
@@ -59,7 +62,8 @@ func (r *WalletRepository) Find(ctx context.Context, id domain.ID) (*wallet.Wall
 	if err != nil {
 		return nil, translate(err)
 	}
-	return rehydrateWallet(row.ID, row.PlayerID, row.Currency, row.BalanceMinor, row.Version)
+	return rehydrateWallet(row.ID, row.PlayerID, row.Currency, row.BalanceMinor, row.Version,
+		row.CreatedAt, row.UpdatedAt)
 }
 
 // Reconcile reads the stored balance and the one rebuilt from the ledger in a
@@ -113,10 +117,16 @@ func (r *WalletRepository) GetForUpdate(ctx context.Context, id domain.ID) (*wal
 		return nil, translate(err)
 	}
 
-	return rehydrateWallet(row.ID, row.PlayerID, row.Currency, row.BalanceMinor, row.Version)
+	return rehydrateWallet(row.ID, row.PlayerID, row.Currency, row.BalanceMinor, row.Version,
+		row.CreatedAt, row.UpdatedAt)
 }
 
-func rehydrateWallet(id, playerID domain.ID, currencyCode string, balanceMinor, version int64) (*wallet.Wallet, error) {
+func rehydrateWallet(
+	id, playerID domain.ID,
+	currencyCode string,
+	balanceMinor, version int64,
+	createdAt, updatedAt time.Time,
+) (*wallet.Wallet, error) {
 	currency, err := money.NewCurrency(currencyCode)
 	if err != nil {
 		return nil, err
@@ -125,7 +135,7 @@ func rehydrateWallet(id, playerID domain.ID, currencyCode string, balanceMinor, 
 	if err != nil {
 		return nil, err
 	}
-	return wallet.Rehydrate(id, playerID, balance, version)
+	return wallet.Rehydrate(id, playerID, balance, version, createdAt, updatedAt)
 }
 
 // UpdateBalance stores the balance and version when the stored version still
@@ -140,6 +150,7 @@ func (r *WalletRepository) UpdateBalance(ctx context.Context, w *wallet.Wallet, 
 		ID:              w.ID(),
 		BalanceMinor:    w.Balance().MinorUnits(),
 		Version:         w.Version(),
+		UpdatedAt:       w.UpdatedAt(),
 		ExpectedVersion: expectedVersion,
 	})
 	if err != nil {

@@ -60,10 +60,12 @@ type openWalletRequest struct {
 }
 
 type walletResponse struct {
-	ID       string      `json:"id"`
-	PlayerID string      `json:"playerId"`
-	Balance  money.Money `json:"balance"`
-	Version  int64       `json:"version"`
+	ID        string      `json:"id"`
+	PlayerID  string      `json:"playerId"`
+	Balance   money.Money `json:"balance"`
+	Version   int64       `json:"version"`
+	CreatedAt time.Time   `json:"createdAt"`
+	UpdatedAt time.Time   `json:"updatedAt"`
 }
 
 func (h *WalletHandler) handleOpenWallet(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +113,7 @@ type ledgerEntryResponse struct {
 	Money         money.Money      `json:"money"`
 	BalanceBefore money.Money      `json:"balanceBefore"`
 	BalanceAfter  money.Money      `json:"balanceAfter"`
-	RecordedAt    time.Time        `json:"recordedAt"`
+	CreatedAt     time.Time        `json:"createdAt"`
 }
 
 type ledgerPageResponse struct {
@@ -172,13 +174,13 @@ func (h *WalletHandler) handleGetLedger(w http.ResponseWriter, r *http.Request) 
 	response := ledgerPageResponse{Entries: make([]ledgerEntryResponse, 0, len(page.Entries))}
 	for _, entry := range page.Entries {
 		response.Entries = append(response.Entries, ledgerEntryResponse{
-			ID:            entry.Entry.ID().String(),
-			TransactionID: entry.Entry.TransactionID().String(),
-			Direction:     entry.Entry.Direction(),
-			Money:         entry.Entry.Money(),
-			BalanceBefore: entry.Entry.BalanceBefore(),
-			BalanceAfter:  entry.Entry.BalanceAfter(),
-			RecordedAt:    entry.RecordedAt.UTC(),
+			ID:            entry.ID().String(),
+			TransactionID: entry.TransactionID().String(),
+			Direction:     entry.Direction(),
+			Money:         entry.Money(),
+			BalanceBefore: entry.BalanceBefore(),
+			BalanceAfter:  entry.BalanceAfter(),
+			CreatedAt:     entry.CreatedAt().UTC(),
 		})
 	}
 	if page.NextCursor != nil {
@@ -222,10 +224,12 @@ func (h *WalletHandler) handleReconcile(w http.ResponseWriter, r *http.Request) 
 
 func newWalletResponse(w *wallet.Wallet) walletResponse {
 	return walletResponse{
-		ID:       w.ID().String(),
-		PlayerID: w.PlayerID().String(),
-		Balance:  w.Balance(),
-		Version:  w.Version(),
+		ID:        w.ID().String(),
+		PlayerID:  w.PlayerID().String(),
+		Balance:   w.Balance(),
+		Version:   w.Version(),
+		CreatedAt: w.CreatedAt().UTC(),
+		UpdatedAt: w.UpdatedAt().UTC(),
 	}
 }
 
@@ -233,7 +237,7 @@ func newWalletResponse(w *wallet.Wallet) walletResponse {
 // clients pass it back without depending on how pages are ordered.
 func encodeLedgerCursor(cursor usecase.LedgerCursor) string {
 	return base64.RawURLEncoding.EncodeToString(
-		[]byte(cursor.RecordedAt.UTC().Format(time.RFC3339Nano) + "|" + cursor.EntryID.String()))
+		[]byte(cursor.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + cursor.EntryID.String()))
 }
 
 func decodeLedgerCursor(encoded string) (*usecase.LedgerCursor, error) {
@@ -244,11 +248,11 @@ func decodeLedgerCursor(encoded string) (*usecase.LedgerCursor, error) {
 	if err != nil {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "cursor %q is invalid", encoded)
 	}
-	recordedAt, entryID, found := strings.Cut(string(decoded), "|")
+	createdAt, entryID, found := strings.Cut(string(decoded), "|")
 	if !found {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "cursor %q is invalid", encoded)
 	}
-	at, err := time.Parse(time.RFC3339Nano, recordedAt)
+	at, err := time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "cursor %q is invalid", encoded)
 	}
@@ -256,7 +260,7 @@ func decodeLedgerCursor(encoded string) (*usecase.LedgerCursor, error) {
 	if err != nil {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "cursor %q is invalid", encoded)
 	}
-	return &usecase.LedgerCursor{RecordedAt: at, EntryID: id}, nil
+	return &usecase.LedgerCursor{CreatedAt: at, EntryID: id}, nil
 }
 
 func queryLimit(raw string) (int, error) {

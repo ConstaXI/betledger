@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/money"
@@ -190,6 +191,8 @@ type transactionResponse struct {
 	FailureCode                    string       `json:"failureCode,omitempty"`
 	ReferenceExternalTransactionID string       `json:"referenceExternalTransactionId,omitempty"`
 	ReferenceAttempts              int          `json:"referenceAttempts"`
+	CreatedAt                      time.Time    `json:"createdAt"`
+	UpdatedAt                      time.Time    `json:"updatedAt"`
 }
 
 func (h *WageringHandler) handleGetTransaction(w http.ResponseWriter, r *http.Request) {
@@ -242,6 +245,8 @@ func newTransactionResponse(transaction *wager.Transaction) transactionResponse 
 		FailureCode:                    string(transaction.FailureCode()),
 		ReferenceExternalTransactionID: transaction.ReferenceExternalTransactionID(),
 		ReferenceAttempts:              transaction.ReferenceAttempts(),
+		CreatedAt:                      transaction.CreatedAt().UTC(),
+		UpdatedAt:                      transaction.UpdatedAt().UTC(),
 	}
 	if balance, ok := transaction.ResultBalance(); ok {
 		response.Balance = &balance

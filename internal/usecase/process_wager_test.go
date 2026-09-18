@@ -443,7 +443,7 @@ func TestProcessWagerExecute(t *testing.T) {
 			t.Parallel()
 
 			playerID := domain.NewID()
-			w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(test.initialMinor, brl))
+			w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(test.initialMinor, brl), fixedNow)
 			require.NoError(t, err)
 			transactor := newFakeTransactor(w)
 			metrics := &fakeMetrics{}

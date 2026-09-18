@@ -7,13 +7,14 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 const insertWallet = `-- name: InsertWallet :exec
-INSERT INTO wallets (id, player_id, currency, balance_minor, version)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO wallets (id, player_id, currency, balance_minor, version, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type InsertWalletParams struct {
@@ -22,6 +23,8 @@ type InsertWalletParams struct {
 	Currency     string
 	BalanceMinor int64
 	Version      int64
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 func (q *Queries) InsertWallet(ctx context.Context, arg InsertWalletParams) error {
@@ -31,61 +34,51 @@ func (q *Queries) InsertWallet(ctx context.Context, arg InsertWalletParams) erro
 		arg.Currency,
 		arg.BalanceMinor,
 		arg.Version,
+		arg.CreatedAt,
+		arg.UpdatedAt,
 	)
 	return err
 }
 
 const selectWallet = `-- name: SelectWallet :one
-SELECT id, player_id, currency, balance_minor, version
+SELECT id, player_id, currency, balance_minor, version, created_at, updated_at
 FROM wallets
 WHERE id = $1
 `
 
-type SelectWalletRow struct {
-	ID           uuid.UUID
-	PlayerID     uuid.UUID
-	Currency     string
-	BalanceMinor int64
-	Version      int64
-}
-
-func (q *Queries) SelectWallet(ctx context.Context, id uuid.UUID) (SelectWalletRow, error) {
+func (q *Queries) SelectWallet(ctx context.Context, id uuid.UUID) (Wallet, error) {
 	row := q.db.QueryRow(ctx, selectWallet, id)
-	var i SelectWalletRow
+	var i Wallet
 	err := row.Scan(
 		&i.ID,
 		&i.PlayerID,
 		&i.Currency,
 		&i.BalanceMinor,
 		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
 const selectWalletForUpdate = `-- name: SelectWalletForUpdate :one
-SELECT id, player_id, currency, balance_minor, version
+SELECT id, player_id, currency, balance_minor, version, created_at, updated_at
 FROM wallets
 WHERE id = $1
 FOR UPDATE
 `
 
-type SelectWalletForUpdateRow struct {
-	ID           uuid.UUID
-	PlayerID     uuid.UUID
-	Currency     string
-	BalanceMinor int64
-	Version      int64
-}
-
-func (q *Queries) SelectWalletForUpdate(ctx context.Context, id uuid.UUID) (SelectWalletForUpdateRow, error) {
+func (q *Queries) SelectWalletForUpdate(ctx context.Context, id uuid.UUID) (Wallet, error) {
 	row := q.db.QueryRow(ctx, selectWalletForUpdate, id)
-	var i SelectWalletForUpdateRow
+	var i Wallet
 	err := row.Scan(
 		&i.ID,
 		&i.PlayerID,
 		&i.Currency,
 		&i.BalanceMinor,
 		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -125,14 +118,15 @@ const updateWalletBalance = `-- name: UpdateWalletBalance :execrows
 UPDATE wallets
 SET balance_minor = $1,
     version = $2,
-    updated_at = now()
-WHERE id = $3
-  AND version = $4
+    updated_at = $3
+WHERE id = $4
+  AND version = $5
 `
 
 type UpdateWalletBalanceParams struct {
 	BalanceMinor    int64
 	Version         int64
+	UpdatedAt       time.Time
 	ID              uuid.UUID
 	ExpectedVersion int64
 }
@@ -141,6 +135,7 @@ func (q *Queries) UpdateWalletBalance(ctx context.Context, arg UpdateWalletBalan
 	result, err := q.db.Exec(ctx, updateWalletBalance,
 		arg.BalanceMinor,
 		arg.Version,
+		arg.UpdatedAt,
 		arg.ID,
 		arg.ExpectedVersion,
 	)

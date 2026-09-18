@@ -760,7 +760,7 @@ components:
 
     Wallet:
       type: object
-      required: [id, playerId, balance, version]
+      required: [id, playerId, balance, version, createdAt, updatedAt]
       additionalProperties: false
       properties:
         id:
@@ -776,6 +776,16 @@ components:
           format: int64
           minimum: 1
           description: Starts at 1 and increments on each balance change.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the wallet was opened, in UTC.
+        updatedAt:
+          type: string
+          format: date-time
+          description: |
+            When the balance last moved, in UTC; it advances with `version` and
+            equals `createdAt` while the balance never moved after the opening.
 
     ProcessWagerRequest:
       type: object
@@ -842,7 +852,7 @@ components:
 
     LedgerEntry:
       type: object
-      required: [id, transactionId, direction, money, balanceBefore, balanceAfter, recordedAt]
+      required: [id, transactionId, direction, money, balanceBefore, balanceAfter, createdAt]
       additionalProperties: false
       properties:
         id:
@@ -860,9 +870,10 @@ components:
           $ref: '#/components/schemas/Money'
         balanceAfter:
           $ref: '#/components/schemas/Money'
-        recordedAt:
+        createdAt:
           type: string
           format: date-time
+          description: When the entry was recorded, in UTC. Entries never change afterwards.
 
     LedgerPage:
       type: object
@@ -902,7 +913,7 @@ components:
       type: object
       required:
         [transactionId, providerId, externalTransactionId, kind, status, walletId, playerId, roundId, gameId,
-         money, referenceAttempts]
+         money, referenceAttempts, createdAt, updatedAt]
       additionalProperties: false
       properties:
         transactionId:
@@ -942,6 +953,16 @@ components:
           type: integer
           minimum: 0
           description: Attempts that found no concluded reference.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the operation was received, in UTC.
+        updatedAt:
+          type: string
+          format: date-time
+          description: |
+            When the state last changed, in UTC, including each attempt counted
+            while the operation waits for its reference.
 
     Error:
       type: object

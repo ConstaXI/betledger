@@ -116,7 +116,7 @@ func applyBet(t *testing.T) (*fakeTransactor, usecase.WagerResult) {
 	t.Helper()
 
 	playerID := domain.NewID()
-	w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(10000, money.MustCurrency("BRL")))
+	w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(10000, money.MustCurrency("BRL")), fixedNow)
 	require.NoError(t, err)
 	transactor := newFakeTransactor(w)
 	processWager := usecase.NewProcessWager(transactor, fakeWallets{}, fakeTransactions{}, fakeLedger{},

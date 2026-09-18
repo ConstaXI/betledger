@@ -17,6 +17,8 @@ INSERT INTO wager_transactions (
     reference_transaction_id,
     failure_code,
     result_balance_minor,
+    created_at,
+    updated_at,
     next_attempt_at
 ) VALUES (
     @id,
@@ -36,6 +38,8 @@ INSERT INTO wager_transactions (
     sqlc.narg(reference_transaction_id),
     sqlc.narg(failure_code),
     sqlc.narg(result_balance_minor),
+    @created_at,
+    @updated_at,
     CASE WHEN @state::text = 'PENDING_REFERENCE' THEN now() END
 );
 
@@ -67,8 +71,7 @@ WHERE id = @id;
 
 -- name: LeasePendingReferences :many
 UPDATE wager_transactions
-SET next_attempt_at = sqlc.arg(lease_until)::timestamptz,
-    updated_at = now()
+SET next_attempt_at = sqlc.arg(lease_until)::timestamptz
 WHERE id IN (
     SELECT due.id
     FROM wager_transactions AS due
@@ -88,6 +91,6 @@ SET state = @state,
     result_balance_minor = sqlc.narg(result_balance_minor),
     reference_attempts = @reference_attempts,
     next_attempt_at = sqlc.narg(next_attempt_at),
-    updated_at = now()
+    updated_at = @updated_at
 WHERE id = @id
   AND state = 'PENDING_REFERENCE';

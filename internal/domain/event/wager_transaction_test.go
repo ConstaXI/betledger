@@ -20,13 +20,13 @@ func TestNewWagerTransactionProcessed(t *testing.T) {
 	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 
 	processedBet := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
-	require.NoError(t, processedBet.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL")))
+	require.NoError(t, processedBet.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"), domaintest.FixedNow))
 	opening, err := wager.NewOpening(domain.NewID(), domain.NewID(), domain.NewID(),
-		domaintest.MustParseMoney(t, "1000.00", "BRL"))
+		domaintest.MustParseMoney(t, "1000.00", "BRL"), domaintest.FixedNow)
 	require.NoError(t, err)
 	pendingBet := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
 	rejectedBet := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
-	require.NoError(t, rejectedBet.MarkRejected(domain.FailureCodeInsufficientFunds))
+	require.NoError(t, rejectedBet.MarkRejected(domain.FailureCodeInsufficientFunds, domaintest.FixedNow))
 
 	processedBetEvent := event.Event{
 		Type:          event.TypeWagerTransactionProcessed,
@@ -145,10 +145,10 @@ func TestNewWagerTransactionRejected(t *testing.T) {
 	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 
 	rejectedBet := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
-	require.NoError(t, rejectedBet.MarkRejected(domain.FailureCodeInsufficientFunds))
+	require.NoError(t, rejectedBet.MarkRejected(domain.FailureCodeInsufficientFunds, domaintest.FixedNow))
 	pendingBet := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
 	processedBet := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
-	require.NoError(t, processedBet.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL")))
+	require.NoError(t, processedBet.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"), domaintest.FixedNow))
 
 	tests := []struct {
 		name          string
@@ -237,7 +237,7 @@ func TestNewWagerTransactionPendingReference(t *testing.T) {
 	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 
 	waitingRefund := domaintest.MustExternalTransaction(t, wager.KindRefund, "25.00")
-	require.NoError(t, waitingRefund.MarkPendingReference())
+	require.NoError(t, waitingRefund.MarkPendingReference(domaintest.FixedNow))
 	pendingRefund := domaintest.MustExternalTransaction(t, wager.KindRefund, "25.00")
 
 	tests := []struct {

@@ -37,17 +37,18 @@ func (r *LedgerRepository) Append(ctx context.Context, entry *ledger.Entry) erro
 		AmountMinor:        entry.Money().MinorUnits(),
 		BalanceBeforeMinor: entry.BalanceBefore().MinorUnits(),
 		BalanceAfterMinor:  entry.BalanceAfter().MinorUnits(),
+		CreatedAt:          entry.CreatedAt(),
 	}))
 }
 
 // Page returns the entries of the wallet after the cursor, in the order they
-// were recorded, with the identifier breaking ties within the same instant.
+// were created, with the identifier breaking ties within the same instant.
 func (r *LedgerRepository) Page(
 	ctx context.Context,
 	walletID domain.ID,
 	cursor *usecase.LedgerCursor,
 	limit int,
-) ([]usecase.LedgerEntry, error) {
+) ([]*ledger.Entry, error) {
 	q, err := queries(ctx)
 	if err != nil {
 		return nil, err
@@ -55,7 +56,7 @@ func (r *LedgerRepository) Page(
 
 	params := sqlcgen.SelectLedgerPageParams{WalletID: walletID, PageSize: int32(limit)}
 	if cursor != nil {
-		params.CursorRecordedAt = &cursor.RecordedAt
+		params.CursorCreatedAt = &cursor.CreatedAt
 		params.CursorEntryID = &cursor.EntryID
 	}
 	rows, err := q.SelectLedgerPage(ctx, params)
@@ -63,7 +64,7 @@ func (r *LedgerRepository) Page(
 		return nil, translate(err)
 	}
 
-	entries := make([]usecase.LedgerEntry, 0, len(rows))
+	entries := make([]*ledger.Entry, 0, len(rows))
 	for _, row := range rows {
 		currency, err := money.NewCurrency(row.Currency)
 		if err != nil {
@@ -82,11 +83,11 @@ func (r *LedgerRepository) Page(
 			return nil, err
 		}
 		entry, err := ledger.NewEntry(row.ID, row.WalletID, row.TransactionID,
-			ledger.Direction(row.Direction), amount, before, after)
+			ledger.Direction(row.Direction), amount, before, after, row.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
-		entries = append(entries, usecase.LedgerEntry{Entry: entry, RecordedAt: row.CreatedAt})
+		entries = append(entries, entry)
 	}
 	return entries, nil
 }

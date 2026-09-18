@@ -55,6 +55,8 @@ func (r *TransactionRepository) Create(ctx context.Context, transaction *wager.T
 		GameID:                         optional(transaction.GameID()),
 		ReferenceExternalTransactionID: optional(transaction.ReferenceExternalTransactionID()),
 		FailureCode:                    optional(string(transaction.FailureCode())),
+		CreatedAt:                      transaction.CreatedAt(),
+		UpdatedAt:                      transaction.UpdatedAt(),
 	}
 	if referenceID, ok := transaction.ReferenceTransactionID(); ok {
 		params.ReferenceTransactionID = &referenceID
@@ -175,6 +177,7 @@ func (r *TransactionRepository) UpdatePendingReference(
 		State:             transaction.State().String(),
 		FailureCode:       optional(string(transaction.FailureCode())),
 		ReferenceAttempts: int32(transaction.ReferenceAttempts()),
+		UpdatedAt:         transaction.UpdatedAt(),
 	}
 	if referenceID, ok := transaction.ReferenceTransactionID(); ok {
 		params.ReferenceTransactionID = &referenceID
@@ -235,6 +238,8 @@ func rehydrateTransaction(row sqlcgen.WagerTransaction, err error) (*wager.Trans
 		ReferenceExternalTransactionID: value(row.ReferenceExternalTransactionID),
 		ReferenceAttempts:              int(row.ReferenceAttempts),
 		FailureCode:                    domain.FailureCode(value(row.FailureCode)),
+		CreatedAt:                      row.CreatedAt,
+		UpdatedAt:                      row.UpdatedAt,
 	}
 	if row.ReferenceTransactionID != nil {
 		params.ReferenceTransactionID = *row.ReferenceTransactionID

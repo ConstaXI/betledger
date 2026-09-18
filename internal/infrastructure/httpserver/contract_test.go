@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -20,6 +19,7 @@ import (
 	"github.com/davibanfi/betledger/api"
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/domaintest"
+	"github.com/davibanfi/betledger/internal/domain/ledger"
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wager"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
@@ -37,14 +37,13 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 	router, err := gorillamux.NewRouter(spec)
 	require.NoError(t, err)
 
-	opened, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(100000, money.MustCurrency("BRL")))
+	opened, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(100000, money.MustCurrency("BRL")), domaintest.FixedNow)
 	require.NoError(t, err)
-	entry, err := opened.OpeningLedgerEntry(domain.NewID())
+	entry, err := opened.OpeningLedgerEntry(domain.NewID(), domaintest.FixedNow)
 	require.NoError(t, err)
-	recordedAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 	page := usecase.LedgerPage{
-		Entries:    []usecase.LedgerEntry{{Entry: entry, RecordedAt: recordedAt}},
-		NextCursor: &usecase.LedgerCursor{RecordedAt: recordedAt, EntryID: entry.ID()},
+		Entries:    []*ledger.Entry{entry},
+		NextCursor: &usecase.LedgerCursor{CreatedAt: entry.CreatedAt(), EntryID: entry.ID()},
 	}
 	reconciliation := usecase.ReconciliationResult{
 		WalletID:       opened.ID(),
@@ -55,7 +54,7 @@ func TestResponsesMatchTheOpenAPIContract(t *testing.T) {
 		CheckedEntries: 1,
 	}
 	processedBet := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
-	require.NoError(t, processedBet.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL")))
+	require.NoError(t, processedBet.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"), domaintest.FixedNow))
 
 	const validBody = `{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"1000.00","currency":"BRL"}}`
 	healthy := HealthCheck{Name: "postgres", Check: func(context.Context) error { return nil }}

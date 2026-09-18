@@ -48,6 +48,8 @@ INSERT INTO wager_transactions (
     reference_transaction_id,
     failure_code,
     result_balance_minor,
+    created_at,
+    updated_at,
     next_attempt_at
 ) VALUES (
     $1,
@@ -67,6 +69,8 @@ INSERT INTO wager_transactions (
     $15,
     $16,
     $17,
+    $18,
+    $19,
     CASE WHEN $3::text = 'PENDING_REFERENCE' THEN now() END
 )
 `
@@ -89,6 +93,8 @@ type InsertWagerTransactionParams struct {
 	ReferenceTransactionID         *uuid.UUID
 	FailureCode                    *string
 	ResultBalanceMinor             *int64
+	CreatedAt                      time.Time
+	UpdatedAt                      time.Time
 }
 
 func (q *Queries) InsertWagerTransaction(ctx context.Context, arg InsertWagerTransactionParams) error {
@@ -110,14 +116,15 @@ func (q *Queries) InsertWagerTransaction(ctx context.Context, arg InsertWagerTra
 		arg.ReferenceTransactionID,
 		arg.FailureCode,
 		arg.ResultBalanceMinor,
+		arg.CreatedAt,
+		arg.UpdatedAt,
 	)
 	return err
 }
 
 const leasePendingReferences = `-- name: LeasePendingReferences :many
 UPDATE wager_transactions
-SET next_attempt_at = $1::timestamptz,
-    updated_at = now()
+SET next_attempt_at = $1::timestamptz
 WHERE id IN (
     SELECT due.id
     FROM wager_transactions AS due
@@ -286,8 +293,8 @@ SET state = $1,
     result_balance_minor = $4,
     reference_attempts = $5,
     next_attempt_at = $6,
-    updated_at = now()
-WHERE id = $7
+    updated_at = $7
+WHERE id = $8
   AND state = 'PENDING_REFERENCE'
 `
 
@@ -298,6 +305,7 @@ type UpdatePendingReferenceParams struct {
 	ResultBalanceMinor     *int64
 	ReferenceAttempts      int32
 	NextAttemptAt          *time.Time
+	UpdatedAt              time.Time
 	ID                     uuid.UUID
 }
 
@@ -309,6 +317,7 @@ func (q *Queries) UpdatePendingReference(ctx context.Context, arg UpdatePendingR
 		arg.ResultBalanceMinor,
 		arg.ReferenceAttempts,
 		arg.NextAttemptAt,
+		arg.UpdatedAt,
 		arg.ID,
 	)
 	if err != nil {

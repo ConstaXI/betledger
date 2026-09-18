@@ -48,13 +48,16 @@ func NewOpenWallet(
 	}
 }
 
-// Execute opens the wallet.
+// Execute opens the wallet. One instant stamps the wallet, the OPENING, its
+// ledger entry and the events, so everything the opening produced agrees on when
+// it happened.
 func (uc *OpenWallet) Execute(ctx context.Context, input OpenWalletInput) (*wallet.Wallet, error) {
 	if input.CorrelationID == "" {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "correlationId is required")
 	}
 
-	w, err := wallet.Open(domain.NewID(), input.PlayerID, input.InitialBalance)
+	now := uc.clock()
+	w, err := wallet.Open(domain.NewID(), input.PlayerID, input.InitialBalance, now)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +70,7 @@ func (uc *OpenWallet) Execute(ctx context.Context, input OpenWalletInput) (*wall
 			return nil
 		}
 
-		opening, err := wager.NewOpening(domain.NewID(), w.ID(), w.PlayerID(), w.Balance())
+		opening, err := wager.NewOpening(domain.NewID(), w.ID(), w.PlayerID(), w.Balance(), now)
 		if err != nil {
 			return err
 		}
@@ -75,7 +78,7 @@ func (uc *OpenWallet) Execute(ctx context.Context, input OpenWalletInput) (*wall
 			return err
 		}
 
-		credit, err := w.OpeningLedgerEntry(opening.ID())
+		credit, err := w.OpeningLedgerEntry(opening.ID(), now)
 		if err != nil {
 			return err
 		}
@@ -83,12 +86,11 @@ func (uc *OpenWallet) Execute(ctx context.Context, input OpenWalletInput) (*wall
 			return err
 		}
 
-		occurredAt := uc.clock()
-		processed, err := event.NewWagerTransactionProcessed(opening, input.CorrelationID, occurredAt)
+		processed, err := event.NewWagerTransactionProcessed(opening, input.CorrelationID, now)
 		if err != nil {
 			return err
 		}
-		balanceChanged, err := event.NewWalletBalanceChanged(w, credit, input.CorrelationID, occurredAt)
+		balanceChanged, err := event.NewWalletBalanceChanged(w, credit, input.CorrelationID, now)
 		if err != nil {
 			return err
 		}

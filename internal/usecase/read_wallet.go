@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/ledger"
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
 )
@@ -17,7 +18,7 @@ const (
 
 // LedgerPage is a page of ledger entries and where the next one starts.
 type LedgerPage struct {
-	Entries []LedgerEntry
+	Entries []*ledger.Entry
 	// NextCursor points at the last entry returned, and is nil when the page is
 	// the last one.
 	NextCursor *LedgerCursor
@@ -97,7 +98,7 @@ func (uc *ReadWallet) Ledger(
 		}
 		if len(entries) > limit {
 			last := entries[limit-1]
-			page.NextCursor = &LedgerCursor{RecordedAt: last.RecordedAt, EntryID: last.Entry.ID()}
+			page.NextCursor = &LedgerCursor{CreatedAt: last.CreatedAt(), EntryID: last.ID()}
 			entries = entries[:limit]
 		}
 		page.Entries = entries

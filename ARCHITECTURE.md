@@ -36,8 +36,25 @@ existe caminho para mover dinheiro sem registrá-lo no ledger.
 As entidades têm estado encapsulado, e criação e reidratação são separadas, para
 que carregar uma carteira do banco nunca reaplique movimentações.
 
-O domínio não lê o relógio: as entidades não carregam timestamps, e os eventos
-recebem o instante de quem os cria. Isso mantém as regras determinísticas.
+**Instantes de criação e atualização.** A seção 6 pede que a carteira carregue
+os instantes de criação e atualização, que a operação carregue timestamps e que
+o lançamento carregue o de criação — e as três entidades carregam. O domínio
+continua sem ler o relógio: o instante entra como argumento no construtor e em
+cada transição (`Open`, `Apply`, `MarkProcessed`, `RecordMissingReference`...),
+e o caso de uso lê o relógio uma vez só por operação. Assim a carteira, a
+operação, o lançamento e os eventos de uma mesma aposta concordam sobre quando
+ela aconteceu, e os testes afirmam instantes sem depender do relógio.
+
+`updatedAt` marca a **última mudança do domínio**: na carteira, a última
+movimentação de saldo, e por isso anda junto com a `version`; na operação, a
+última transição de estado, incluindo cada tentativa de referência contada. O
+lease de uma operação pendente é agendamento, não mudança, e não o toca. As
+entidades não comparam os dois instantes entre si: eles podem vir de processos
+com relógios em desacordo, e uma carteira precisa continuar legível mesmo assim.
+
+O relógio das aplicações trunca em microssegundos, a precisão do `timestamptz`,
+para que a resposta que cria uma carteira e uma leitura posterior mostrem o
+mesmo `createdAt`.
 
 ## Transações e estados
 
@@ -312,7 +329,9 @@ dentro de uma transação, e não reaproveitam o caminho que trava a carteira: l
 não bloqueia quem está apostando.
 
 - **Paginação por cursor.** O ledger é ordenado por `(created_at, id)`, e o
-  cursor carrega esse par codificado em Base64. É opaco de propósito: o cliente
+  cursor carrega esse par codificado em Base64. O `created_at` é o instante que
+  a entidade carrega, gravado pela aplicação; a ordem continua total e estável
+  porque os lançamentos nunca mudam depois de gravados e o identificador desempata. É opaco de propósito: o cliente
   devolve o que recebeu, e a ordenação pode mudar sem quebrar ninguém. O caso de
   uso lê um item além da página para saber se existe próxima, em vez de contar o
   total.

@@ -71,8 +71,8 @@ func (uc *ProcessInboxMessage) Execute(ctx context.Context, message InboundMessa
 		}
 		if found {
 			result = InboundResult{
-				WagerResult: WagerResult{TransactionID: recorded.TransactionID, IdempotentReplay: true},
-				Duplicate:   true,
+				TransactionID: recorded.TransactionID, IdempotentReplay: true,
+				Duplicate: true,
 			}
 			return nil
 		}

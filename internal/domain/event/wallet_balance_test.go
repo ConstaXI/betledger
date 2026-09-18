@@ -21,10 +21,10 @@ func TestNewWalletBalanceChanged(t *testing.T) {
 	occurredAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 
 	debited := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
-	debit, err := debited.Debit(domaintest.MustParseMoney(t, "25.00", "BRL"), domain.NewID())
+	debit, err := debited.Debit(domaintest.MustParseMoney(t, "25.00", "BRL"), domain.NewID(), domaintest.FixedNow)
 	require.NoError(t, err)
 	credited := domaintest.MustOpenWallet(t, domaintest.MustParseMoney(t, "100.00", "BRL"))
-	credit, err := credited.Credit(domaintest.MustParseMoney(t, "40.00", "BRL"), domain.NewID())
+	credit, err := credited.Credit(domaintest.MustParseMoney(t, "40.00", "BRL"), domain.NewID(), domaintest.FixedNow)
 	require.NoError(t, err)
 
 	tests := []struct {

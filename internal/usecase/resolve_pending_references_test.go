@@ -55,6 +55,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 		wantWalletBalance money.Money
 		wantEventTypes    []event.Type
 		wantMetrics       []string
+		wantUpdatedAt     time.Time
 	}{
 		{
 			name:              "should accept when the bet arrived after the refund",
@@ -67,6 +68,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantEventTypes:    slices.Concat(pending, processed, processed),
 			wantMetrics:       []string{"reference PROCESSED"},
+			wantUpdatedAt:     fixedNow,
 		},
 		{
 			name:              "should report the refund still waiting when the bet has not arrived",
@@ -81,6 +83,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantEventTypes:    pending,
 			wantMetrics:       []string{"reference PENDING_REFERENCE"},
+			wantUpdatedAt:     fixedNow,
 		},
 		{
 			name:              "should report nothing taken when the next attempt is not due",
@@ -95,6 +98,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantEventTypes:    pending,
 			wantMetrics:       []string{"reference PENDING_REFERENCE"},
+			wantUpdatedAt:     fixedNow,
 		},
 		{
 			name:              "should report a doubled delay when another attempt finds nothing",
@@ -111,6 +115,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantEventTypes:    pending,
 			wantMetrics:       []string{"reference PENDING_REFERENCE", "reference PENDING_REFERENCE"},
+			wantUpdatedAt:     fixedNow.Add(time.Second),
 		},
 		{
 			name:              "should report the delay capped at the maximum when attempts keep failing",
@@ -130,6 +135,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 				"reference PENDING_REFERENCE", "reference PENDING_REFERENCE",
 				"reference PENDING_REFERENCE", "reference PENDING_REFERENCE",
 			},
+			wantUpdatedAt: fixedNow.Add(30 * time.Second),
 		},
 		{
 			name:              "should return REFERENCE_NOT_FOUND when the attempts run out",
@@ -146,6 +152,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantEventTypes:    slices.Concat(pending, rejected),
 			wantMetrics:       []string{"reference PENDING_REFERENCE", "reference REJECTED"},
+			wantUpdatedAt:     fixedNow.Add(time.Second),
 		},
 		{
 			name:              "should accept when the bet arrives between attempts",
@@ -162,6 +169,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantEventTypes:    slices.Concat(pending, processed, processed),
 			wantMetrics:       []string{"reference PENDING_REFERENCE", "reference PROCESSED"},
+			wantUpdatedAt:     fixedNow.Add(time.Second),
 		},
 		{
 			name:              "should return REFERENCE_NOT_PROCESSED when the bet arrived and was rejected",
@@ -175,6 +183,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 			wantWalletBalance: money.MustNew(1000, brl),
 			wantEventTypes:    slices.Concat(pending, rejected, rejected),
 			wantMetrics:       []string{"reference REJECTED"},
+			wantUpdatedAt:     fixedNow,
 		},
 		{
 			name:         "should return REFERENCE_ALREADY_REVERSED when the bet was refunded meanwhile",
@@ -192,6 +201,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantEventTypes:    slices.Concat(pending, processed, processed, rejected),
 			wantMetrics:       []string{"reference REJECTED"},
+			wantUpdatedAt:     fixedNow,
 		},
 		{
 			name:         "should report the rollback still waiting when its refund concludes in the same run",
@@ -210,6 +220,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 			wantWalletBalance: money.MustNew(10000, brl),
 			wantEventTypes:    slices.Concat(pending, pending, processed, processed),
 			wantMetrics:       []string{"reference PENDING_REFERENCE", "reference PROCESSED"},
+			wantUpdatedAt:     fixedNow,
 		},
 		{
 			name:              "should return ErrUnavailable when the outcome cannot be written, keeping the lease",
@@ -224,6 +235,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 			wantNextAttemptAt: fixedNow.Add(30 * time.Second),
 			wantWalletBalance: money.MustNew(7500, brl),
 			wantEventTypes:    slices.Concat(pending, processed),
+			wantUpdatedAt:     fixedNow,
 		},
 		{
 			name:              "should report nothing taken when no operation waits",
@@ -234,6 +246,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 			wantState:         wager.StateProcessed,
 			wantWalletBalance: money.MustNew(7500, brl),
 			wantEventTypes:    processed,
+			wantUpdatedAt:     fixedNow,
 		},
 	}
 
@@ -243,7 +256,7 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 
 			ctx := context.Background()
 			playerID := domain.NewID()
-			w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(test.initialMinor, brl))
+			w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(test.initialMinor, brl), fixedNow)
 			require.NoError(t, err)
 			now := fixedNow
 			clock := func() time.Time { return now }
@@ -303,6 +316,8 @@ func TestResolvePendingReferencesExecute(t *testing.T) {
 			assert.Equal(t, test.wantWalletBalance, transactor.committed.wallets[w.ID()].Balance())
 			assert.Equal(t, test.wantEventTypes, transactor.committed.eventTypes)
 			assert.Equal(t, test.wantMetrics, metrics.calls)
+			assert.Equal(t, test.wantUpdatedAt, watched.UpdatedAt())
+			assert.Equal(t, fixedNow, watched.CreatedAt(), "the creation instant never moves")
 		})
 	}
 }

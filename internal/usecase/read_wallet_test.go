@@ -67,7 +67,7 @@ func TestReadWalletLedger(t *testing.T) {
 
 			ctx := context.Background()
 			playerID := domain.NewID()
-			w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(100000, brl))
+			w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(100000, brl), fixedNow)
 			require.NoError(t, err)
 			transactor := newFakeTransactor(w)
 			processWager := usecase.NewProcessWager(transactor, fakeWallets{}, fakeTransactions{}, fakeLedger{},

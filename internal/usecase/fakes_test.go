@@ -109,7 +109,7 @@ func transactionFrom(ctx context.Context) (*fakeTransaction, error) {
 }
 
 func copyWallet(w *wallet.Wallet) *wallet.Wallet {
-	copied, err := wallet.Rehydrate(w.ID(), w.PlayerID(), w.Balance(), w.Version())
+	copied, err := wallet.Rehydrate(w.ID(), w.PlayerID(), w.Balance(), w.Version(), w.CreatedAt(), w.UpdatedAt())
 	if err != nil {
 		panic(err)
 	}
@@ -314,6 +314,8 @@ func copyTransaction(transaction *wager.Transaction) *wager.Transaction {
 		ReferenceExternalTransactionID: transaction.ReferenceExternalTransactionID(),
 		ReferenceAttempts:              transaction.ReferenceAttempts(),
 		FailureCode:                    transaction.FailureCode(),
+		CreatedAt:                      transaction.CreatedAt(),
+		UpdatedAt:                      transaction.UpdatedAt(),
 	}
 	params.ReferenceTransactionID, _ = transaction.ReferenceTransactionID()
 	if balance, ok := transaction.ResultBalance(); ok {
@@ -342,18 +344,18 @@ func (fakeLedger) Page(
 	walletID domain.ID,
 	cursor *usecase.LedgerCursor,
 	limit int,
-) ([]usecase.LedgerEntry, error) {
+) ([]*ledger.Entry, error) {
 	tx, err := transactionFrom(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	var page []usecase.LedgerEntry
-	for i, entry := range tx.committed.entries {
-		recordedAt := fixedNow.Add(time.Duration(i) * time.Second)
-		after := cursor == nil || recordedAt.After(cursor.RecordedAt)
+	var page []*ledger.Entry
+	for _, entry := range tx.committed.entries {
+		after := cursor == nil || entry.CreatedAt().After(cursor.CreatedAt) ||
+			(entry.CreatedAt().Equal(cursor.CreatedAt) && entry.ID().String() > cursor.EntryID.String())
 		if entry.WalletID() == walletID && after && len(page) < limit {
-			page = append(page, usecase.LedgerEntry{Entry: entry, RecordedAt: recordedAt})
+			page = append(page, entry)
 		}
 	}
 	return page, nil

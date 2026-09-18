@@ -108,6 +108,7 @@ func (uc *ResolvePendingReferences) retry(
 	ctx context.Context,
 	pending PendingReference,
 ) (wager.State, error) {
+	at := uc.clock()
 	var state wager.State
 	err := uc.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
 		w, err := uc.walletsRepository.GetForUpdate(ctx, pending.WalletID)
@@ -127,12 +128,12 @@ func (uc *ResolvePendingReferences) retry(
 		reference, err := uc.findReference(ctx, transaction)
 		var entry *ledger.Entry
 		if err == nil {
-			entry, err = w.Apply(transaction, reference)
+			entry, err = w.Apply(transaction, reference, at)
 		}
 		if errors.Is(err, errReferencePending) {
-			err = transaction.RecordMissingReference(uc.policy.MaxAttempts)
+			err = transaction.RecordMissingReference(uc.policy.MaxAttempts, at)
 		} else {
-			err = conclude(transaction, w, err)
+			err = conclude(transaction, w, err, at)
 		}
 		if err != nil {
 			return err
@@ -140,10 +141,10 @@ func (uc *ResolvePendingReferences) retry(
 
 		state = transaction.State()
 		if state == wager.StatePendingReference {
-			nextAttemptAt := uc.clock().Add(uc.policy.delay(transaction.ReferenceAttempts()))
+			nextAttemptAt := at.Add(uc.policy.delay(transaction.ReferenceAttempts()))
 			return uc.transactionsRepository.UpdatePendingReference(ctx, transaction, nextAttemptAt)
 		}
-		events, err := uc.newEvents(transaction, w, entry, "pending-reference-"+transaction.ID().String())
+		events, err := uc.newEvents(transaction, w, entry, "pending-reference-"+transaction.ID().String(), at)
 		if err != nil {
 			return err
 		}

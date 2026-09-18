@@ -56,9 +56,13 @@ porque a seção 6 da spec exige estado encapsulado e isso é item pontuado. Mes
 lá, não crie acessor sem consumidor real.
 
 **Nenhum campo sem regra de negócio por trás**: se nada no domínio consome o
-campo, ele pertence à infraestrutura. Foi por isso que `createdAt`/`updatedAt`
-saíram das entidades — nenhuma regra depende de relógio, e a expiração de
-referência pendente é por número máximo de tentativas, não por TTL.
+campo, ele pertence à infraestrutura. A exceção são `createdAt`/`updatedAt` em
+`Wallet`, `WagerTransaction` e `WalletLedgerEntry` (só `createdAt`), que a
+seção 6 da spec exige nas entidades. Mesmo assim **o domínio não lê o relógio**:
+o instante entra como argumento no construtor e em cada transição, e
+`updatedAt` marca a última mudança de estado — um lease ou reagendamento não
+conta. A expiração de referência pendente continua por número máximo de
+tentativas, não por TTL.
 
 **Domínio isolado**: `internal/domain` não importa Fx, HTTP, SQS nem biblioteca
 de persistência. Só stdlib, `google/uuid` e `testify` nos testes.

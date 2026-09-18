@@ -214,7 +214,9 @@ X-Correlation-Id: req-123
   "id": "0192f291-27dd-7d3f-8071-5f8685deef37",
   "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
   "balance": { "amount": "1000.00", "currency": "BRL" },
-  "version": 1
+  "version": 1,
+  "createdAt": "2026-09-18T13:20:51.715243Z",
+  "updatedAt": "2026-09-18T13:20:51.715243Z"
 }
 ```
 
@@ -365,9 +367,14 @@ Todas exigem o papel `wallet-operator`, menos as de operação, que exigem
 | `GET /providers/:providerId/wagering/transactions/:externalId` | a mesma operação, pelo identificador do provedor |
 
 O ledger é paginado por **cursor opaco**: a resposta traz `nextCursor` enquanto
-houver mais, e a última página não traz. A ordenação é estável por instante de
-gravação e, no empate, por identificador — então nada se perde nem se repete
-entre páginas.
+houver mais, e a última página não traz. A ordenação é estável pelo `createdAt`
+do lançamento e, no empate, por identificador — então nada se perde nem se
+repete entre páginas.
+
+Carteira e operação trazem `createdAt` e `updatedAt`, e cada lançamento traz o
+seu `createdAt`, todos em UTC. Na carteira, `updatedAt` é a última movimentação
+de saldo e anda junto com a `version`; na operação, é a última mudança de
+estado, incluindo cada tentativa de resolver a referência.
 
 Um provedor só enxerga as próprias operações. Consultar a operação de outro
 responde `404`, e não `403`, para não revelar que ela existe. Já usar outro

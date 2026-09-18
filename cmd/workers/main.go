@@ -68,8 +68,13 @@ func newLogger() *slog.Logger {
 	return logging.New(os.Stdout)
 }
 
+// newClock reads the time at the precision PostgreSQL stores, so that an entity
+// reports the same instants before and after it is persisted: the response to
+// the request that created it and a later read must agree.
 func newClock() usecase.Clock {
-	return time.Now
+	return func() time.Time {
+		return time.Now().UTC().Truncate(time.Microsecond)
+	}
 }
 
 // newRequestRecorder hands the server the part of the recorder it uses, which

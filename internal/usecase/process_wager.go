@@ -83,6 +83,7 @@ func (uc *ProcessWager) Execute(ctx context.Context, input ProcessWagerInput) (W
 	if err != nil {
 		return WagerResult{}, err
 	}
+	receivedAt := uc.clock()
 	transaction, err := wager.NewExternal(wager.NewExternalParams{
 		ID:                             domain.NewID(),
 		Kind:                           input.Kind,
@@ -96,12 +97,12 @@ func (uc *ProcessWager) Execute(ctx context.Context, input ProcessWagerInput) (W
 		GameID:                         input.GameID,
 		Money:                          input.Money,
 		ReferenceExternalTransactionID: input.ReferenceExternalTransactionID,
+		CreatedAt:                      receivedAt,
 	})
 	if err != nil {
 		return WagerResult{}, err
 	}
 
-	startedAt := uc.clock()
 	var result WagerResult
 	err = uc.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
 		w, err := uc.walletsRepository.GetForUpdate(ctx, transaction.WalletID())
@@ -122,13 +123,13 @@ func (uc *ProcessWager) Execute(ctx context.Context, input ProcessWagerInput) (W
 		reference, err := uc.findReference(ctx, transaction)
 		var entry *ledger.Entry
 		if err == nil {
-			entry, err = w.Apply(transaction, reference)
+			entry, err = w.Apply(transaction, reference, receivedAt)
 		}
-		if err := conclude(transaction, w, err); err != nil {
+		if err := conclude(transaction, w, err, receivedAt); err != nil {
 			return err
 		}
 
-		events, err := uc.newEvents(transaction, w, entry, input.CorrelationID)
+		events, err := uc.newEvents(transaction, w, entry, input.CorrelationID, receivedAt)
 		if err != nil {
 			return err
 		}
@@ -150,7 +151,7 @@ func (uc *ProcessWager) Execute(ctx context.Context, input ProcessWagerInput) (W
 		State:       result.State,
 		FailureCode: result.FailureCode,
 		Replay:      result.IdempotentReplay,
-		Duration:    uc.clock().Sub(startedAt),
+		Duration:    uc.clock().Sub(receivedAt),
 	})
 	return result, nil
 }

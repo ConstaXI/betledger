@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,9 +33,11 @@ func TestReadEndpointsAnswerTheStoredState(t *testing.T) {
 	firstStatus, firstBody := application.Read(t, "/wallets/"+w.ID().String()+"/ledger?limit=2", "wallet-service")
 
 	var wallet struct {
-		ID      string            `json:"id"`
-		Balance map[string]string `json:"balance"`
-		Version int64             `json:"version"`
+		ID        string            `json:"id"`
+		Balance   map[string]string `json:"balance"`
+		Version   int64             `json:"version"`
+		CreatedAt time.Time         `json:"createdAt"`
+		UpdatedAt time.Time         `json:"updatedAt"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(walletBody), &wallet))
 	var firstPage struct {
@@ -42,6 +45,7 @@ func TestReadEndpointsAnswerTheStoredState(t *testing.T) {
 			ID           string            `json:"id"`
 			Direction    string            `json:"direction"`
 			BalanceAfter map[string]string `json:"balanceAfter"`
+			CreatedAt    time.Time         `json:"createdAt"`
 		} `json:"entries"`
 		NextCursor string `json:"nextCursor"`
 	}
@@ -53,6 +57,7 @@ func TestReadEndpointsAnswerTheStoredState(t *testing.T) {
 			ID           string            `json:"id"`
 			Direction    string            `json:"direction"`
 			BalanceAfter map[string]string `json:"balanceAfter"`
+			CreatedAt    time.Time         `json:"createdAt"`
 		} `json:"entries"`
 		NextCursor string `json:"nextCursor"`
 	}
@@ -73,6 +78,11 @@ func TestReadEndpointsAnswerTheStoredState(t *testing.T) {
 	assert.Equal(t, "100.00", firstPage.Entries[0].BalanceAfter["amount"])
 	assert.Equal(t, "70.00", secondPage.Entries[1].BalanceAfter["amount"], "the oldest entries come first")
 	assert.NotEqual(t, firstPage.Entries[0].ID, secondPage.Entries[0].ID, "pages must not overlap")
+
+	assert.True(t, wallet.CreatedAt.Before(wallet.UpdatedAt), "the balance moved after the opening")
+	assert.Equal(t, wallet.CreatedAt, firstPage.Entries[0].CreatedAt, "the opening entry carries the opening instant")
+	assert.Equal(t, wallet.UpdatedAt, secondPage.Entries[1].CreatedAt,
+		"the last movement stamps the wallet and its entry with the same instant")
 }
 
 func TestReconciliationReportsDivergenceWithoutChangingTheBalance(t *testing.T) {

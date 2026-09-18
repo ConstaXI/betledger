@@ -144,18 +144,11 @@ type Reconciliation struct {
 }
 
 // LedgerCursor points at the last entry of a page, so the next page continues
-// right after it. Entries are ordered by when they were recorded and, within
-// the same instant, by identifier.
+// right after it. Entries are ordered by when they were created and, within the
+// same instant, by identifier.
 type LedgerCursor struct {
-	RecordedAt time.Time
-	EntryID    domain.ID
-}
-
-// LedgerEntry is a stored ledger entry together with when it was recorded,
-// which the domain entity does not carry because no rule depends on it.
-type LedgerEntry struct {
-	Entry      *ledger.Entry
-	RecordedAt time.Time
+	CreatedAt time.Time
+	EntryID   domain.ID
 }
 
 // LedgerRepository persists the append-only wallet ledger. Writes must run
@@ -165,7 +158,7 @@ type LedgerRepository interface {
 	Append(ctx context.Context, entry *ledger.Entry) error
 	// Page returns up to limit entries of the wallet, in a stable order,
 	// starting after the cursor when there is one.
-	Page(ctx context.Context, walletID domain.ID, cursor *LedgerCursor, limit int) ([]LedgerEntry, error)
+	Page(ctx context.Context, walletID domain.ID, cursor *LedgerCursor, limit int) ([]*ledger.Entry, error)
 }
 
 // OutboxRecord is an event recorded in the outbox, as it is published.

@@ -21,7 +21,8 @@ INSERT INTO wallet_ledger_entries (
     currency,
     amount_minor,
     balance_before_minor,
-    balance_after_minor
+    balance_after_minor,
+    created_at
 ) VALUES (
     $1,
     $2,
@@ -30,7 +31,8 @@ INSERT INTO wallet_ledger_entries (
     $5,
     $6,
     $7,
-    $8
+    $8,
+    $9
 )
 `
 
@@ -43,6 +45,7 @@ type InsertLedgerEntryParams struct {
 	AmountMinor        int64
 	BalanceBeforeMinor int64
 	BalanceAfterMinor  int64
+	CreatedAt          time.Time
 }
 
 func (q *Queries) InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) error {
@@ -55,6 +58,7 @@ func (q *Queries) InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryPa
 		arg.AmountMinor,
 		arg.BalanceBeforeMinor,
 		arg.BalanceAfterMinor,
+		arg.CreatedAt,
 	)
 	return err
 }
@@ -73,16 +77,16 @@ LIMIT $4::int
 `
 
 type SelectLedgerPageParams struct {
-	WalletID         uuid.UUID
-	CursorRecordedAt *time.Time
-	CursorEntryID    *uuid.UUID
-	PageSize         int32
+	WalletID        uuid.UUID
+	CursorCreatedAt *time.Time
+	CursorEntryID   *uuid.UUID
+	PageSize        int32
 }
 
 func (q *Queries) SelectLedgerPage(ctx context.Context, arg SelectLedgerPageParams) ([]WalletLedgerEntry, error) {
 	rows, err := q.db.Query(ctx, selectLedgerPage,
 		arg.WalletID,
-		arg.CursorRecordedAt,
+		arg.CursorCreatedAt,
 		arg.CursorEntryID,
 		arg.PageSize,
 	)

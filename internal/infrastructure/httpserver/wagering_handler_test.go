@@ -313,7 +313,7 @@ func TestWageringReadHandlers(t *testing.T) {
 	t.Parallel()
 
 	transaction := domaintest.MustExternalTransaction(t, wager.KindBet, "25.00")
-	require.NoError(t, transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL")))
+	require.NoError(t, transaction.MarkProcessed(domaintest.MustParseMoney(t, "75.00", "BRL"), domaintest.FixedNow))
 
 	tests := []struct {
 		name           string

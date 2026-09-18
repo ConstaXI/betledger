@@ -1,9 +1,9 @@
 -- name: InsertWallet :exec
-INSERT INTO wallets (id, player_id, currency, balance_minor, version)
-VALUES (@id, @player_id, @currency, @balance_minor, @version);
+INSERT INTO wallets (id, player_id, currency, balance_minor, version, created_at, updated_at)
+VALUES (@id, @player_id, @currency, @balance_minor, @version, @created_at, @updated_at);
 
 -- name: SelectWalletForUpdate :one
-SELECT id, player_id, currency, balance_minor, version
+SELECT id, player_id, currency, balance_minor, version, created_at, updated_at
 FROM wallets
 WHERE id = @id
 FOR UPDATE;
@@ -12,12 +12,12 @@ FOR UPDATE;
 UPDATE wallets
 SET balance_minor = @balance_minor,
     version = @version,
-    updated_at = now()
+    updated_at = @updated_at
 WHERE id = @id
   AND version = @expected_version;
 
 -- name: SelectWallet :one
-SELECT id, player_id, currency, balance_minor, version
+SELECT id, player_id, currency, balance_minor, version, created_at, updated_at
 FROM wallets
 WHERE id = @id;
 

@@ -2,6 +2,8 @@
 package ledger
 
 import (
+	"time"
+
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/money"
 )
@@ -24,6 +26,9 @@ type Entry struct {
 	balanceBefore money.Money
 	// balanceAfter equals balanceBefore plus or minus amount, per direction.
 	balanceAfter money.Money
+	// createdAt is when the entry was recorded; it never changes, because the
+	// ledger is append-only, and it orders the pages of the ledger.
+	createdAt time.Time
 }
 
 // NewEntry creates an entry, validating the balance arithmetic. It serves both
@@ -32,6 +37,7 @@ func NewEntry(
 	id, walletID, transactionID domain.ID,
 	direction Direction,
 	amount, balanceBefore, balanceAfter money.Money,
+	createdAt time.Time,
 ) (*Entry, error) {
 	if err := domain.RequireID(id, "ledger entry id"); err != nil {
 		return nil, err
@@ -40,6 +46,9 @@ func NewEntry(
 		return nil, err
 	}
 	if err := domain.RequireID(transactionID, "transactionId"); err != nil {
+		return nil, err
+	}
+	if err := domain.RequireTime(createdAt, "createdAt"); err != nil {
 		return nil, err
 	}
 	if !direction.IsValid() {
@@ -78,6 +87,7 @@ func NewEntry(
 		amount:        amount,
 		balanceBefore: balanceBefore,
 		balanceAfter:  balanceAfter,
+		createdAt:     createdAt,
 	}, nil
 }
 
@@ -88,6 +98,7 @@ func (e *Entry) Direction() Direction       { return e.direction }
 func (e *Entry) Money() money.Money         { return e.amount }
 func (e *Entry) BalanceBefore() money.Money { return e.balanceBefore }
 func (e *Entry) BalanceAfter() money.Money  { return e.balanceAfter }
+func (e *Entry) CreatedAt() time.Time       { return e.createdAt }
 
 // SignedMoney returns the amount signed by its direction, used by
 // reconciliation to rebuild the balance from the ledger.

@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/event"
@@ -25,33 +26,33 @@ type settlement struct {
 // has not concluded yet, so the operation must wait for it.
 var errReferencePending = errors.New("usecase: reference pending")
 
-// conclude moves the transaction to the state its outcome calls for: waiting
-// for the reference, rejected by a business rule, or processed. Any other
-// outcome is an error that aborts the database transaction.
-func conclude(transaction *wager.Transaction, w *wallet.Wallet, outcome error) error {
+// conclude moves the transaction, at the given instant, to the state its outcome
+// calls for: waiting for the reference, rejected by a business rule, or
+// processed. Any other outcome is an error that aborts the database transaction.
+func conclude(transaction *wager.Transaction, w *wallet.Wallet, outcome error, at time.Time) error {
 	switch {
 	case errors.Is(outcome, errReferencePending):
-		return transaction.MarkPendingReference()
+		return transaction.MarkPendingReference(at)
 	case errors.Is(outcome, domain.ErrRejected):
 		failureCode, _ := domain.CodeOf(outcome)
-		return transaction.MarkRejected(failureCode)
+		return transaction.MarkRejected(failureCode, at)
 	case outcome != nil:
 		return outcome
 	default:
-		return transaction.MarkProcessed(w.Balance())
+		return transaction.MarkProcessed(w.Balance(), at)
 	}
 }
 
 // newEvents builds the events of a concluded transaction, all stamped with the
-// same instant: one for its state, and WalletBalanceChanged when the ledger
-// entry shows the balance moved.
+// instant the operation concluded: one for its state, and WalletBalanceChanged
+// when the ledger entry shows the balance moved.
 func (s settlement) newEvents(
 	transaction *wager.Transaction,
 	w *wallet.Wallet,
 	entry *ledger.Entry,
 	correlationID string,
+	occurredAt time.Time,
 ) ([]event.Event, error) {
-	occurredAt := s.clock()
 	var outcome event.Event
 	var err error
 	switch transaction.State() {

@@ -9,13 +9,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/davibanfi/betledger/internal/domain"
+	"github.com/davibanfi/betledger/internal/domain/domaintest"
+	"github.com/davibanfi/betledger/internal/domain/ledger"
 	"github.com/davibanfi/betledger/internal/domain/money"
 	"github.com/davibanfi/betledger/internal/domain/wallet"
 	"github.com/davibanfi/betledger/internal/infrastructure/auth"
@@ -52,7 +53,7 @@ func TestOpenWalletHandler(t *testing.T) {
 
 	const validBody = `{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"1000.00","currency":"BRL"}}`
 
-	opened, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(100000, money.MustCurrency("BRL")))
+	opened, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(100000, money.MustCurrency("BRL")), domaintest.FixedNow)
 	require.NoError(t, err)
 
 	validInput := usecase.OpenWalletInput{
@@ -232,14 +233,13 @@ func TestWalletReadHandlers(t *testing.T) {
 	t.Parallel()
 
 	brl := money.MustCurrency("BRL")
-	opened, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(100000, brl))
+	opened, err := wallet.Open(domain.NewID(), domain.NewID(), money.MustNew(100000, brl), domaintest.FixedNow)
 	require.NoError(t, err)
-	entry, err := opened.OpeningLedgerEntry(domain.NewID())
+	entry, err := opened.OpeningLedgerEntry(domain.NewID(), domaintest.FixedNow)
 	require.NoError(t, err)
-	recordedAt := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
-	cursor := usecase.LedgerCursor{RecordedAt: recordedAt, EntryID: entry.ID()}
+	cursor := usecase.LedgerCursor{CreatedAt: entry.CreatedAt(), EntryID: entry.ID()}
 	page := usecase.LedgerPage{
-		Entries:    []usecase.LedgerEntry{{Entry: entry, RecordedAt: recordedAt}},
+		Entries:    []*ledger.Entry{entry},
 		NextCursor: &cursor,
 	}
 	reconciled := usecase.ReconciliationResult{

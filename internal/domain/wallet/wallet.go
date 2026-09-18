@@ -3,6 +3,7 @@ package wallet
 
 import (
 	"errors"
+	"time"
 
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/ledger"
@@ -24,18 +25,31 @@ type Wallet struct {
 	// version starts at 1 and increments only on a balance change, backing the
 	// conditional update that prevents lost updates.
 	version int64
+	// createdAt is when the wallet was opened.
+	createdAt time.Time
+	// updatedAt is when the balance last moved, so it advances with the version
+	// and equals createdAt in a wallet that never moved after the opening.
+	updatedAt time.Time
 }
 
 const initialVersion int64 = 1
 
-// Open creates a wallet already holding the initial balance. The version stays
-// at 1: the opening does not count as a post-creation balance change.
-func Open(id, playerID domain.ID, initialBalance money.Money) (*Wallet, error) {
-	return Rehydrate(id, playerID, initialBalance, initialVersion)
+// Open creates a wallet already holding the initial balance, opened at the given
+// instant. The version stays at 1: the opening does not count as a
+// post-creation balance change.
+func Open(id, playerID domain.ID, initialBalance money.Money, openedAt time.Time) (*Wallet, error) {
+	return Rehydrate(id, playerID, initialBalance, initialVersion, openedAt, openedAt)
 }
 
-// Rehydrate rebuilds a persisted wallet without reapplying movements.
-func Rehydrate(id, playerID domain.ID, balance money.Money, version int64) (*Wallet, error) {
+// Rehydrate rebuilds a persisted wallet without reapplying movements. It does not
+// compare the two instants: they come from different processes, whose clocks may
+// disagree, and a wallet must stay readable regardless.
+func Rehydrate(
+	id, playerID domain.ID,
+	balance money.Money,
+	version int64,
+	createdAt, updatedAt time.Time,
+) (*Wallet, error) {
 	if err := domain.RequireID(id, "walletId"); err != nil {
 		return nil, err
 	}
@@ -53,26 +67,35 @@ func Rehydrate(id, playerID domain.ID, balance money.Money, version int64) (*Wal
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput,
 			"wallet version must be >= %d, got %d", initialVersion, version)
 	}
+	if err := domain.RequireTime(createdAt, "createdAt"); err != nil {
+		return nil, err
+	}
+	if err := domain.RequireTime(updatedAt, "updatedAt"); err != nil {
+		return nil, err
+	}
 
 	return &Wallet{
-		id:       id,
-		playerID: playerID,
-		balance:  balance,
-		version:  version,
+		id:        id,
+		playerID:  playerID,
+		balance:   balance,
+		version:   version,
+		createdAt: createdAt,
+		updatedAt: updatedAt,
 	}, nil
 }
 
-// Credit adds the amount to the balance and returns the matching credit entry.
-func (w *Wallet) Credit(amount money.Money, transactionID domain.ID) (*ledger.Entry, error) {
-	return w.move(amount, transactionID, ledger.Credit)
+// Credit adds the amount to the balance and returns the matching credit entry,
+// recorded at the given instant.
+func (w *Wallet) Credit(amount money.Money, transactionID domain.ID, at time.Time) (*ledger.Entry, error) {
+	return w.move(amount, transactionID, ledger.Credit, at)
 }
 
 // Debit subtracts the amount, keeping the balance at or above zero, and returns
 // the matching debit entry. A shortfall yields an error satisfying
 // errors.Is(err, domain.ErrInsufficientFunds), so the application can choose
 // between FailureCodeInsufficientFunds and FailureCodeInsufficientFundsForReversal.
-func (w *Wallet) Debit(amount money.Money, transactionID domain.ID) (*ledger.Entry, error) {
-	return w.move(amount, transactionID, ledger.Debit)
+func (w *Wallet) Debit(amount money.Money, transactionID domain.ID, at time.Time) (*ledger.Entry, error) {
+	return w.move(amount, transactionID, ledger.Debit, at)
 }
 
 // Apply moves the wallet as the operation demands: a BET debits, a WIN or a
@@ -83,7 +106,7 @@ func (w *Wallet) Debit(amount money.Money, transactionID domain.ID) (*ledger.Ent
 // insufficient funds — are errors of class domain.ErrRejected, meant to be
 // recorded rather than rolled back; a reversal short of funds is refused with
 // FailureCodeInsufficientFundsForReversal, apart from a BET.
-func (w *Wallet) Apply(operation, reference *wager.Transaction) (*ledger.Entry, error) {
+func (w *Wallet) Apply(operation, reference *wager.Transaction, at time.Time) (*ledger.Entry, error) {
 	if operation == nil {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput, "transaction is required")
 	}
@@ -111,9 +134,9 @@ func (w *Wallet) Apply(operation, reference *wager.Transaction) (*ledger.Entry, 
 	case operation.Kind() == wager.KindLoss:
 		return nil, nil
 	case operation.Kind() == wager.KindBet:
-		return w.Debit(operation.Money(), operation.ID())
+		return w.Debit(operation.Money(), operation.ID(), at)
 	case operation.Kind() == wager.KindRollback && reference.Kind() != wager.KindBet:
-		entry, err := w.Debit(operation.Money(), operation.ID())
+		entry, err := w.Debit(operation.Money(), operation.ID(), at)
 		if errors.Is(err, domain.ErrInsufficientFunds) {
 			return nil, domain.RejectionErrorWithCause(domain.ErrInsufficientFunds,
 				domain.FailureCodeInsufficientFundsForReversal,
@@ -122,11 +145,16 @@ func (w *Wallet) Apply(operation, reference *wager.Transaction) (*ledger.Entry, 
 		}
 		return entry, err
 	default:
-		return w.Credit(operation.Money(), operation.ID())
+		return w.Credit(operation.Money(), operation.ID(), at)
 	}
 }
 
-func (w *Wallet) move(amount money.Money, transactionID domain.ID, direction ledger.Direction) (*ledger.Entry, error) {
+func (w *Wallet) move(
+	amount money.Money,
+	transactionID domain.ID,
+	direction ledger.Direction,
+	at time.Time,
+) (*ledger.Entry, error) {
 	if err := domain.RequireID(transactionID, "transactionId"); err != nil {
 		return nil, err
 	}
@@ -152,20 +180,22 @@ func (w *Wallet) move(amount money.Money, transactionID domain.ID, direction led
 			"insufficient funds: balance %s, debit %s", balanceBefore, amount)
 	}
 
-	entry, err := ledger.NewEntry(domain.NewID(), w.id, transactionID, direction, amount, balanceBefore, balanceAfter)
+	entry, err := ledger.NewEntry(domain.NewID(), w.id, transactionID, direction,
+		amount, balanceBefore, balanceAfter, at)
 	if err != nil {
 		return nil, err
 	}
 
 	w.balance = balanceAfter
 	w.version++
+	w.updatedAt = at
 	return entry, nil
 }
 
 // OpeningLedgerEntry produces the opening credit entry, from zero to the
 // initial balance, without touching balance or version, which Open has already
 // set. It fails when the opening had no positive initial balance.
-func (w *Wallet) OpeningLedgerEntry(transactionID domain.ID) (*ledger.Entry, error) {
+func (w *Wallet) OpeningLedgerEntry(transactionID domain.ID, at time.Time) (*ledger.Entry, error) {
 	if err := domain.RequireID(transactionID, "transactionId"); err != nil {
 		return nil, err
 	}
@@ -177,11 +207,13 @@ func (w *Wallet) OpeningLedgerEntry(transactionID domain.ID) (*ledger.Entry, err
 	if err != nil {
 		return nil, err
 	}
-	return ledger.NewEntry(domain.NewID(), w.id, transactionID, ledger.Credit, w.balance, zero, w.balance)
+	return ledger.NewEntry(domain.NewID(), w.id, transactionID, ledger.Credit, w.balance, zero, w.balance, at)
 }
 
 func (w *Wallet) ID() domain.ID            { return w.id }
 func (w *Wallet) PlayerID() domain.ID      { return w.playerID }
 func (w *Wallet) Balance() money.Money     { return w.balance }
 func (w *Wallet) Version() int64           { return w.version }
+func (w *Wallet) CreatedAt() time.Time     { return w.createdAt }
+func (w *Wallet) UpdatedAt() time.Time     { return w.updatedAt }
 func (w *Wallet) Currency() money.Currency { return w.balance.Currency() }

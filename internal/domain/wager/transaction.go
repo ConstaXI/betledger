@@ -4,6 +4,7 @@ package wager
 
 import (
 	"slices"
+	"time"
 
 	"github.com/davibanfi/betledger/internal/domain"
 	"github.com/davibanfi/betledger/internal/domain/money"
@@ -56,6 +57,12 @@ type Transaction struct {
 	// resultBalance is the balance observed on conclusion, so that a replay
 	// returns the original result even after later movements.
 	resultBalance *money.Money
+
+	// createdAt is when the operation was recorded.
+	createdAt time.Time
+	// updatedAt is when the state last changed, which for an operation waiting
+	// for its reference includes each attempt counted.
+	updatedAt time.Time
 }
 
 // NewExternalParams gathers an operation received over HTTP or SQS.
@@ -72,6 +79,8 @@ type NewExternalParams struct {
 	GameID                         string
 	Money                          money.Money
 	ReferenceExternalTransactionID string
+	// CreatedAt is when the operation was received.
+	CreatedAt time.Time
 }
 
 // NewExternal creates an external operation in the PENDING state.
@@ -90,6 +99,9 @@ func NewExternal(params NewExternalParams) (*Transaction, error) {
 		return nil, err
 	}
 	if err := domain.RequireID(params.PlayerID, "playerId"); err != nil {
+		return nil, err
+	}
+	if err := domain.RequireTime(params.CreatedAt, "createdAt"); err != nil {
 		return nil, err
 	}
 	for field, value := range map[string]string{
@@ -129,12 +141,18 @@ func NewExternal(params NewExternalParams) (*Transaction, error) {
 		roundID:                        params.RoundID,
 		gameID:                         params.GameID,
 		referenceExternalTransactionID: params.ReferenceExternalTransactionID,
+		createdAt:                      params.CreatedAt,
+		updatedAt:                      params.CreatedAt,
 	}, nil
 }
 
 // NewOpening creates the internal wallet opening operation, already concluded
 // and without the external metadata that does not apply to it.
-func NewOpening(id, walletID, playerID domain.ID, initialBalance money.Money) (*Transaction, error) {
+func NewOpening(
+	id, walletID, playerID domain.ID,
+	initialBalance money.Money,
+	createdAt time.Time,
+) (*Transaction, error) {
 	if err := domain.RequireID(id, "transactionId"); err != nil {
 		return nil, err
 	}
@@ -147,6 +165,9 @@ func NewOpening(id, walletID, playerID domain.ID, initialBalance money.Money) (*
 	if err := validateKindAmount(KindOpening, initialBalance); err != nil {
 		return nil, err
 	}
+	if err := domain.RequireTime(createdAt, "createdAt"); err != nil {
+		return nil, err
+	}
 
 	balance := initialBalance
 	return &Transaction{
@@ -157,6 +178,8 @@ func NewOpening(id, walletID, playerID domain.ID, initialBalance money.Money) (*
 		playerID:      playerID,
 		amount:        initialBalance,
 		resultBalance: &balance,
+		createdAt:     createdAt,
+		updatedAt:     createdAt,
 	}, nil
 }
 
@@ -179,6 +202,8 @@ type RehydrateParams struct {
 	ReferenceAttempts              int
 	FailureCode                    domain.FailureCode
 	ResultBalance                  *money.Money
+	CreatedAt                      time.Time
+	UpdatedAt                      time.Time
 }
 
 // Rehydrate rebuilds a persisted operation without reapplying movements,
@@ -206,6 +231,12 @@ func Rehydrate(params RehydrateParams) (*Transaction, error) {
 		return nil, domain.ValidationError(domain.FailureCodeInvalidInput,
 			"reference attempts cannot be negative, got %d", params.ReferenceAttempts)
 	}
+	if err := domain.RequireTime(params.CreatedAt, "createdAt"); err != nil {
+		return nil, err
+	}
+	if err := domain.RequireTime(params.UpdatedAt, "updatedAt"); err != nil {
+		return nil, err
+	}
 
 	return &Transaction{
 		id:                             params.ID,
@@ -225,6 +256,8 @@ func Rehydrate(params RehydrateParams) (*Transaction, error) {
 		referenceAttempts:              params.ReferenceAttempts,
 		failureCode:                    params.FailureCode,
 		resultBalance:                  params.ResultBalance,
+		createdAt:                      params.CreatedAt,
+		updatedAt:                      params.UpdatedAt,
 	}, nil
 }
 
@@ -264,18 +297,21 @@ func validateKindReference(kind Kind, reference string) error {
 }
 
 // MarkPendingReference records the wait for a reference not yet available.
-func (t *Transaction) MarkPendingReference() error {
+func (t *Transaction) MarkPendingReference(at time.Time) error {
 	if t.referenceExternalTransactionID == "" {
 		return domain.ValidationError(domain.FailureCodeInvalidStateTransition,
 			"%s %s does not depend on a reference", t.kind, t.externalTransactionID)
 	}
-	return t.transitionTo(StatePendingReference)
+	return t.transitionTo(StatePendingReference, at)
 }
 
 // RecordMissingReference counts an attempt that still found no concluded
 // reference. When the attempts reach maxAttempts, the operation is rejected with
 // FailureCodeReferenceNotFound; otherwise it keeps waiting.
-func (t *Transaction) RecordMissingReference(maxAttempts int) error {
+func (t *Transaction) RecordMissingReference(maxAttempts int, at time.Time) error {
+	if err := domain.RequireTime(at, "attempt instant"); err != nil {
+		return err
+	}
 	if maxAttempts < 1 {
 		return domain.ValidationError(domain.FailureCodeInvalidInput,
 			"the maximum of reference attempts must be at least 1, got %d", maxAttempts)
@@ -285,15 +321,16 @@ func (t *Transaction) RecordMissingReference(maxAttempts int) error {
 			"only an operation in %s waits for its reference, got %s", StatePendingReference, t.state)
 	}
 	t.referenceAttempts++
+	t.updatedAt = at
 	if t.referenceAttempts < maxAttempts {
 		return nil
 	}
-	return t.MarkRejected(domain.FailureCodeReferenceNotFound)
+	return t.MarkRejected(domain.FailureCodeReferenceNotFound, at)
 }
 
 // MarkProcessed concludes the operation successfully, keeping the observed
 // balance so that a replay returns the same result even after later movements.
-func (t *Transaction) MarkProcessed(balanceAfter money.Money) error {
+func (t *Transaction) MarkProcessed(balanceAfter money.Money, at time.Time) error {
 	if err := balanceAfter.Validate(); err != nil {
 		return err
 	}
@@ -301,7 +338,7 @@ func (t *Transaction) MarkProcessed(balanceAfter money.Money) error {
 		return domain.ValidationError(domain.FailureCodeCurrencyMismatch,
 			"balance in %s does not match the operation currency %s", balanceAfter.Currency(), t.amount.Currency())
 	}
-	if err := t.transitionTo(StateProcessed); err != nil {
+	if err := t.transitionTo(StateProcessed, at); err != nil {
 		return err
 	}
 	balance := balanceAfter
@@ -310,11 +347,11 @@ func (t *Transaction) MarkProcessed(balanceAfter money.Money) error {
 }
 
 // MarkRejected ends the operation by a business rule refusal.
-func (t *Transaction) MarkRejected(code domain.FailureCode) error {
+func (t *Transaction) MarkRejected(code domain.FailureCode, at time.Time) error {
 	if code == "" {
 		return domain.ValidationError(domain.FailureCodeInvalidInput, "a rejection requires a failureCode")
 	}
-	if err := t.transitionTo(StateRejected); err != nil {
+	if err := t.transitionTo(StateRejected, at); err != nil {
 		return err
 	}
 	t.failureCode = code
@@ -323,11 +360,11 @@ func (t *Transaction) MarkRejected(code domain.FailureCode) error {
 
 // MarkFailed ends the operation by a permanent infrastructure failure, keeping
 // the record for auditing.
-func (t *Transaction) MarkFailed(code domain.FailureCode) error {
+func (t *Transaction) MarkFailed(code domain.FailureCode, at time.Time) error {
 	if code == "" {
 		return domain.ValidationError(domain.FailureCodeInvalidInput, "a failure requires a failureCode")
 	}
-	if err := t.transitionTo(StateFailed); err != nil {
+	if err := t.transitionTo(StateFailed, at); err != nil {
 		return err
 	}
 	t.failureCode = code
@@ -382,7 +419,12 @@ var referableKinds = map[Kind][]Kind{
 	KindRollback: {KindBet, KindWin, KindRefund},
 }
 
-func (t *Transaction) transitionTo(target State) error {
+// transitionTo moves the state and stamps when it moved, so that updatedAt
+// always marks the last change of the operation.
+func (t *Transaction) transitionTo(target State, at time.Time) error {
+	if err := domain.RequireTime(at, "transition instant"); err != nil {
+		return err
+	}
 	if t.state.IsTerminal() {
 		return domain.ValidationError(domain.FailureCodeInvalidStateTransition,
 			"operation in terminal state %s cannot transition to %s", t.state, target)
@@ -392,6 +434,7 @@ func (t *Transaction) transitionTo(target State) error {
 			"transition from %s to %s is not allowed", t.state, target)
 	}
 	t.state = target
+	t.updatedAt = at
 	return nil
 }
 
@@ -408,6 +451,8 @@ func (t *Transaction) PayloadHash() string             { return t.payloadHash }
 func (t *Transaction) RoundID() string                 { return t.roundID }
 func (t *Transaction) GameID() string                  { return t.gameID }
 func (t *Transaction) FailureCode() domain.FailureCode { return t.failureCode }
+func (t *Transaction) CreatedAt() time.Time            { return t.createdAt }
+func (t *Transaction) UpdatedAt() time.Time            { return t.updatedAt }
 
 // ReferenceExternalTransactionID returns the external reference supplied.
 func (t *Transaction) ReferenceExternalTransactionID() string {

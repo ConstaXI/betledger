@@ -120,7 +120,7 @@ func TestProcessInboxMessageExecute(t *testing.T) {
 
 			ctx := context.Background()
 			playerID := domain.NewID()
-			w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(10000, brl))
+			w, err := wallet.Open(domain.NewID(), playerID, money.MustNew(10000, brl), fixedNow)
 			require.NoError(t, err)
 			transactor := newFakeTransactor(w)
 			metrics := &fakeMetrics{}
