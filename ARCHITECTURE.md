@@ -459,5 +459,57 @@ OpenTelemetry, exportadas no formato Prometheus em `/metrics`.
 
 ## Trabalho não concluído
 
-- **Tracing com OpenTelemetry** e **dashboards**, que a seção 12 da spec marca
-  como diferenciais opcionais.
+O tempo foi investido primeiro no que a spec torna eliminatório e nos critérios
+de maior peso — integridade financeira, concorrência, idempotência e
+mensageria —, com cada garantia provada por testes de integração contra
+PostgreSQL, Keycloak e SQS reais e com as aplicações rodando como processos
+separados. Preferi entregar menos itens com qualidade verificável a cobrir todos
+pela metade, e por isso faltou tempo para o que segue. Cada item diz o que falta,
+o impacto e como seria resolvido.
+
+### Da spec
+
+- **O estado `FAILED` nunca é gravado (§6.3).** O domínio tem a transição, com
+  testes, mas nenhum caso de uso a usa. Uma falha permanente de infraestrutura
+  volta como erro, sem registro de auditoria. Na retomada de referências o
+  efeito é pior: o contador de tentativas só avança quando a referência não é
+  encontrada, então qualquer outro erro desfaz a transação, o lease expira e a
+  operação volta a ser tomada a cada 30s, para sempre. A correção é contar as
+  falhas permanentes de cada operação e encerrá-la em `FAILED` ao atingir um
+  limite, com evento e métrica.
+- **Controle de acesso ao broker (§2).** As filas não têm política de acesso e as
+  credenciais são as fixas do LocalStack. O modelo seria uma credencial por
+  aplicação com o mínimo de privilégio: a API sem acesso nenhum ao SQS, porque
+  publica pela outbox, e os workers lendo e apagando só na fila de operações e
+  escrevendo só na DLQ e na fila de eventos.
+- **Interrupção real do consumidor entre o commit e a remoção (§13).** O efeito
+  dessa interrupção — a mesma mensagem entregue de novo depois de confirmada — é
+  testado reenviando a mensagem, e a deduplicação pela inbox está comprovada.
+  Falta um teste que mate o processo exatamente nessa janela, o que pede um ponto
+  de falha injetável no consumidor.
+- **Liberação de recursos dos workers no encerramento (§13).** O encerramento do
+  poller tem testes unitários — ocioso, rodada concluída no prazo e rodada
+  cancelada pelo prazo —, e a API tem um teste de integração que confere o pool
+  do banco fechado depois do `SIGTERM`. Os workers não têm esse teste de
+  integração; seria o mesmo, contando as conexões pelo `application_name`.
+
+### Diferenciais opcionais (§12 e §14)
+
+- **Tracing com OpenTelemetry.** As métricas já usam a API do OpenTelemetry,
+  então o tracing entra pelo mesmo caminho: um `TracerProvider` ao lado do
+  `MeterProvider` e a instrumentação do servidor HTTP, do cliente SQS e do pgx.
+- **Dashboards e alertas** sobre as métricas expostas, com Prometheus e Grafana
+  no Compose.
+- **Testes de carga**, com throughput, p50/p95/p99, conflitos e atraso da outbox.
+- **Ledger de partidas dobradas.**
+
+### Pendências menores
+
+- **Um publisher parado não aparece no atraso da outbox.** A métrica de atraso
+  ganha amostra a cada tentativa de publicação, e sem publisher não há
+  tentativa. Falta uma gauge de eventos pendentes.
+- O `causationId` existe no envelope dos eventos, mas nunca é preenchido.
+- `/docs` e `/openapi.yaml` são servidos, mas não constam da própria spec
+  OpenAPI.
+- Os `404` e `400` das consultas estão testados nos handlers, mas não têm
+  cenário no teste de contrato.
